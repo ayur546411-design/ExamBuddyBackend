@@ -45,8 +45,10 @@ async def get_documents(
 @router.post("/upload")
 async def upload_document(
     file: UploadFile = File(...),
+    subject_id: Optional[str] = Form(None),
+    department_id: Optional[str] = Form(None),
+    document_type: DocumentTypeEnum = Form(...),
     db: AsyncSession = Depends(get_db)
-    # current_user = Depends(get_current_admin_user) # To be implemented
 ):
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
@@ -61,22 +63,26 @@ async def upload_document(
         # 2. Extract Text from PDF
         pdf_text = await extract_text_from_pdf(file_bytes)
         
-        # 3. Get Structured JSON from Gemini
-        structured_data = await extract_structured_data_from_pdf_text(pdf_text)
+        # 3. Get Structured JSON from Gemini (with fallback)
+        structured_data = {}
+        try:
+            structured_data = await extract_structured_data_from_pdf_text(pdf_text)
+        except Exception as gemini_e:
+            print(f"Gemini extraction failed: {gemini_e}")
+            structured_data = {"error": "Failed to extract metadata with Gemini"}
         
         # 4. Save to Database
-        from app.models.document import Document
-        from app.models.document import DocumentTypeEnum
-        import json
+        title = structured_data.get("title", file.filename)
+        description = structured_data.get("description", "")
         
-        # We store the raw JSON from Gemini into our JSON column
-        # Assuming the document is a "notice" since we don't have Subject ID yet
         new_doc = Document(
-            document_type=DocumentTypeEnum.notice,
+            document_type=document_type,
             cloudinary_url=cloudinary_url,
-            title=structured_data.get("title", "Untitled Document"),
-            description=structured_data.get("description", ""),
-            metadata_json=structured_data
+            title=title,
+            description=description,
+            metadata_json=structured_data,
+            subject_id=subject_id,
+            department_id=department_id
         )
         
         db.add(new_doc)
