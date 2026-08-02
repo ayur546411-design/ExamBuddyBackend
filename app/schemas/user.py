@@ -1,11 +1,11 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 from app.models.user import UserRoleEnum
 
 class UserBase(BaseModel):
     full_name: str
-    email: Optional[EmailStr] = None
+
     mobile_number: Optional[str] = None
     school_id: Optional[str] = None
     department_id: Optional[str] = None

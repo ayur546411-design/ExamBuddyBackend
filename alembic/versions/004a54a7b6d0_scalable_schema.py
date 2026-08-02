@@ -98,7 +98,6 @@ def upgrade() -> None:
     sa.Column('id', sa.String(), nullable=False),
     sa.Column('school_id', sa.String(), nullable=True),
     sa.Column('department_id', sa.String(), nullable=True),
-    sa.Column('email', sa.String(), nullable=True),
     sa.Column('mobile_number', sa.String(), nullable=True),
     sa.Column('hashed_password', sa.String(), nullable=False),
     sa.Column('full_name', sa.String(), nullable=False),
@@ -115,7 +114,6 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_users_department_id'), 'users', ['department_id'], unique=False)
-    op.create_index(op.f('ix_users_email'), 'users', ['email'], unique=True)
     op.create_index(op.f('ix_users_full_name'), 'users', ['full_name'], unique=False)
     op.create_index(op.f('ix_users_mobile_number'), 'users', ['mobile_number'], unique=True)
     op.create_index(op.f('ix_users_school_id'), 'users', ['school_id'], unique=False)
@@ -272,7 +270,6 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_users_school_id'), table_name='users')
     op.drop_index(op.f('ix_users_mobile_number'), table_name='users')
     op.drop_index(op.f('ix_users_full_name'), table_name='users')
-    op.drop_index(op.f('ix_users_email'), table_name='users')
     op.drop_index(op.f('ix_users_department_id'), table_name='users')
     op.drop_table('users')
     op.drop_index(op.f('ix_semesters_department_id'), table_name='semesters')
