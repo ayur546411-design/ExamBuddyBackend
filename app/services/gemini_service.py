@@ -7,7 +7,6 @@ import re
 logger = logging.getLogger(__name__)
 
 genai.configure(api_key=settings.GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
 
 def _get_prompt_for_type(doc_type: str, text: str) -> str:
     base_instructions = "Analyze the following extracted PDF text and strictly output ONLY valid JSON format. Do not include markdown code blocks or any other text before or after the JSON.\n\n"
@@ -98,18 +97,29 @@ async def extract_structured_data_from_pdf_text(pdf_text: str, document_type: st
     """
     Sends extracted PDF text to Gemini to generate structured JSON data based on document type.
     """
-    try:
-        prompt = _get_prompt_for_type(document_type.value if hasattr(document_type, 'value') else document_type, pdf_text)
-        
-        response = model.generate_content(prompt)
-        raw_text = response.text.strip()
-        
-        # Clean the response in case it contains markdown blocks like ```json ... ```
-        cleaned_text = re.sub(r'^```json\s*', '', raw_text)
-        cleaned_text = re.sub(r'\s*```$', '', cleaned_text).strip()
-        
-        return json.loads(cleaned_text)
-    except Exception as e:
-        logger.error(f"Gemini API failed: {str(e)}")
-        # Return empty structured json if it fails so the pipeline doesn't completely break
-        return {"error": "Failed to parse structured JSON from Gemini.", "details": str(e)}
+    prompt = _get_prompt_for_type(document_type.value if hasattr(document_type, 'value') else document_type, pdf_text)
+    
+    models_to_try = [
+        'gemini-flash-latest',
+        'gemini-2.5-flash',
+        'gemini-2.0-flash',
+        'gemini-3.5-flash',
+        'gemini-pro-latest'
+    ]
+    
+    for model_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            raw_text = response.text.strip()
+            
+            # Clean the response in case it contains markdown blocks like ```json ... ```
+            cleaned_text = re.sub(r'^```json\s*', '', raw_text)
+            cleaned_text = re.sub(r'\s*```$', '', cleaned_text).strip()
+            
+            return json.loads(cleaned_text)
+        except Exception as e:
+            logger.error(f"Gemini API failed with model {model_name}: {str(e)}")
+            if model_name == models_to_try[-1]:
+                # All models failed
+                return {"error": "Failed to parse structured JSON from Gemini using all available models.", "details": str(e)}

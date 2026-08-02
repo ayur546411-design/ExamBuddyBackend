@@ -19,6 +19,19 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    from fastapi.exceptions import RequestValidationError
+    from fastapi import Request
+    from fastapi.responses import JSONResponse
+    import logging
+    
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        logging.error(f"Validation Error: {exc.errors()} \nBody: {exc.body}")
+        return JSONResponse(
+            status_code=422,
+            content={"detail": exc.errors(), "body": exc.body},
+        )
+        
     # Exception Handlers
     app.add_exception_handler(APIException, api_exception_handler)
     app.add_exception_handler(Exception, general_exception_handler)

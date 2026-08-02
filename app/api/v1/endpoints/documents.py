@@ -51,12 +51,14 @@ async def upload_document(
     school_id: Optional[str] = Form(None),
     semester_id: Optional[str] = Form(None),
     academic_year: Optional[str] = Form(None),
-    document_type: DocumentTypeEnum = Form(...),
+    document_type: DocumentTypeEnum = Form(DocumentTypeEnum.academic_calendar),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Upload a PDF, extract text, process with Gemini, and save to DB.
     """
+    doc_type_enum = document_type
+        
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
         
@@ -86,7 +88,7 @@ async def upload_document(
         # Try to infer title from JSON, otherwise fallback to filename
         title = file.filename
         if "Subject Name" in structured_data and structured_data["Subject Name"]:
-            title = f"{structured_data['Subject Name']} {document_type.value.capitalize()}"
+            title = f"{structured_data['Subject Name']} {doc_type_enum.value.capitalize()}"
         elif "Title" in structured_data:
             title = structured_data["Title"]
             
@@ -98,7 +100,7 @@ async def upload_document(
         final_academic_year = academic_year or structured_data.get("Academic Year")
 
         new_doc = Document(
-            document_type=document_type,
+            document_type=doc_type_enum,
             cloudinary_url=cloudinary_url,
             cloudinary_public_id=cloudinary_public_id,
             file_size=file_size,
