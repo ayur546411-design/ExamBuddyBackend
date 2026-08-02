@@ -43,6 +43,8 @@ class Document(Base):
     description = Column(String, nullable=True)
     keywords = Column(String, nullable=True) # stored as comma separated or text
     metadata_json = Column(JSON, nullable=True)
+    extracted_text = Column(String, nullable=True)
+    structured_json = Column(JSON, nullable=True)
     
     uploaded_by_admin = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     status = Column(String, default="active")

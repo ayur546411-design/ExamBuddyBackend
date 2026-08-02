@@ -5,9 +5,3 @@ from .semester import Semester
 from .subject import Subject
 from .document import Document
 from .user import User
-from .attendance import Attendance
-from .cgpa import CGPA
-from .result import Result
-from .notice import Notice
-from .calendar import AcademicCalendarEvent
-from .notification import Notification

@@ -2,49 +2,114 @@ import google.generativeai as genai
 from app.core.config import settings
 import logging
 import json
+import re
 
 logger = logging.getLogger(__name__)
 
 genai.configure(api_key=settings.GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-1.5-flash')
 
-# Use the latest recommended model for general tasks
-model = genai.GenerativeModel('gemini-flash-latest') 
+def _get_prompt_for_type(doc_type: str, text: str) -> str:
+    base_instructions = "Analyze the following extracted PDF text and strictly output ONLY valid JSON format. Do not include markdown code blocks or any other text before or after the JSON.\n\n"
+    
+    if doc_type == "syllabus":
+        return base_instructions + f"""
+Format the syllabus into this JSON structure:
+{{
+  "Semester": "string or null",
+  "Subject Name": "string or null",
+  "Subject Code": "string or null",
+  "Credits": "number or null",
+  "Units": [
+    {{
+      "Unit Name": "string",
+      "Topics": ["string"]
+    }}
+  ],
+  "Learning Outcomes": ["string"],
+  "Practicals": ["string"],
+  "Reference Books": ["string"],
+  "Keywords": ["string"]
+}}
 
-async def extract_structured_data_from_pdf_text(pdf_text: str) -> dict:
+Extracted Text:
+{text}
+"""
+    elif doc_type == "pyq":
+        return base_instructions + f"""
+Format the Previous Year Question Paper into this JSON structure:
+{{
+  "Subject Name": "string or null",
+  "Subject Code": "string or null",
+  "Semester": "string or null",
+  "Academic Year": "string or null",
+  "Exam Type": "string or null",
+  "Total Marks": "number or null",
+  "Duration": "string or null",
+  "Questions": [
+    {{
+      "Question Number": "string",
+      "Question Text": "string",
+      "Marks": "number or null",
+      "Unit": "string or null"
+    }}
+  ],
+  "Unit-wise Question Mapping": {{"Unit 1": ["Question 1"]}},
+  "Frequently Asked Questions": ["string"],
+  "Important Topics": ["string"],
+  "Keywords": ["string"]
+}}
+
+Extracted Text:
+{text}
+"""
+    elif doc_type == "academic_calendar":
+        return base_instructions + f"""
+Format the Academic Calendar into an array of events within this JSON structure:
+{{
+  "Events": [
+    {{
+      "event_title": "string",
+      "event_date": "YYYY-MM-DD",
+      "description": "string or null"
+    }}
+  ]
+}}
+
+Extracted Text:
+{text}
+"""
+    else:
+        # Generic fallback
+        return base_instructions + f"""
+Extract key metadata and summarize the document in this JSON structure:
+{{
+  "Title": "string",
+  "Summary": "string",
+  "Key Points": ["string"],
+  "Keywords": ["string"]
+}}
+
+Extracted Text:
+{text}
+"""
+
+async def extract_structured_data_from_pdf_text(pdf_text: str, document_type: str) -> dict:
     """
-    Sends extracted PDF text to Gemini to generate structured JSON data.
+    Sends extracted PDF text to Gemini to generate structured JSON data based on document type.
     """
-    prompt = f"""
-    Analyze the following extracted text from a university document (e.g., PYQ, Notes, Syllabus) 
-    and extract key information into a well-structured JSON format.
-    
-    Required JSON keys:
-    - title: Document title
-    - subject: Subject name if applicable
-    - semester: Semester number if mentioned
-    - unit: Unit number if mentioned
-    - description: A brief summary
-    - keywords: Array of important keywords
-    - important_topics: Array of key topics
-    - metadata: Any other relevant information
-    
-    Return ONLY valid JSON.
-    
-    Text:
-    {pdf_text}
-    """
-    
     try:
+        prompt = _get_prompt_for_type(document_type.value if hasattr(document_type, 'value') else document_type, pdf_text)
+        
         response = model.generate_content(prompt)
-        # Attempt to parse the response text as JSON
-        # It's good practice to clean the response in case Gemini wraps it in ```json ... ```
         raw_text = response.text.strip()
-        if raw_text.startswith("```json"):
-            raw_text = raw_text[7:]
-        if raw_text.endswith("```"):
-            raw_text = raw_text[:-3]
-            
-        return json.loads(raw_text.strip())
+        
+        # Clean the response in case it contains markdown blocks like ```json ... ```
+        cleaned_text = re.sub(r'^```json\s*', '', raw_text)
+        cleaned_text = re.sub(r'\s*```$', '', cleaned_text).strip()
+        
+        return json.loads(cleaned_text)
     except Exception as e:
         logger.error(f"Gemini API failed: {str(e)}")
-        raise
+        # Return empty structured json if it fails so the pipeline doesn't completely break
+        return {"error": "Failed to parse structured JSON from Gemini.", "details": str(e)}
