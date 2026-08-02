@@ -14,6 +14,8 @@ class DocumentBase(BaseModel):
     file_type: Optional[str] = None
     keywords: Optional[str] = None
     metadata_json: Optional[Any] = None
+    structured_json: Optional[Any] = None
+    extracted_text: Optional[str] = None
     status: Optional[str] = "active"
 
 class Document(DocumentBase):
