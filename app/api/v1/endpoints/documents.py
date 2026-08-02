@@ -46,9 +46,9 @@ async def get_documents(
 @router.post("/upload")
 async def upload_document(
     file: UploadFile = File(...),
+    school_id: str = Form(...),
+    department_id: str = Form(...),
     subject_id: Optional[str] = Form(None),
-    department_id: Optional[str] = Form(None),
-    school_id: Optional[str] = Form(None),
     semester_id: Optional[str] = Form(None),
     academic_year: Optional[str] = Form(None),
     document_type: DocumentTypeEnum = Form(DocumentTypeEnum.academic_calendar),
@@ -57,6 +57,30 @@ async def upload_document(
     """
     Upload a PDF, extract text, process with Gemini, and save to DB.
     """
+    from app.models.school import School
+    from app.models.department import Department
+    
+    # 1. Validate foreign keys first to prevent 500 IntegrityError
+    school = await db.execute(select(School).where(School.id == school_id))
+    if not school.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail=f"Invalid school_id: {school_id} does not exist.")
+        
+    department = await db.execute(select(Department).where(Department.id == department_id))
+    if not department.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail=f"Invalid department_id: {department_id} does not exist.")
+        
+    if semester_id:
+        from app.models.semester import Semester
+        semester = await db.execute(select(Semester).where(Semester.id == semester_id))
+        if not semester.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail=f"Invalid semester_id: {semester_id} does not exist.")
+            
+    if subject_id:
+        from app.models.subject import Subject
+        subject = await db.execute(select(Subject).where(Subject.id == subject_id))
+        if not subject.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail=f"Invalid subject_id: {subject_id} does not exist.")
+            
     doc_type_enum = document_type
         
     if not file.filename.endswith(".pdf"):
@@ -87,14 +111,23 @@ async def upload_document(
         # 4. Save to Database
         # Try to infer title from JSON, otherwise fallback to filename
         title = file.filename
-        if "Subject Name" in structured_data and structured_data["Subject Name"]:
+        if structured_data.get("Subject Name"):
             title = f"{structured_data['Subject Name']} {doc_type_enum.value.capitalize()}"
-        elif "Title" in structured_data:
+        elif structured_data.get("Title"):
             title = structured_data["Title"]
             
+        if not title:
+            title = file.filename
+            
         description = structured_data.get("Summary", "")
+        if description is None:
+            description = ""
+            
         keywords_list = structured_data.get("Keywords", [])
-        keywords = ", ".join(keywords_list) if isinstance(keywords_list, list) else str(keywords_list)
+        if keywords_list is None:
+            keywords = ""
+        else:
+            keywords = ", ".join(keywords_list) if isinstance(keywords_list, list) else str(keywords_list)
         
         # If academic year isn't provided, see if Gemini found it
         final_academic_year = academic_year or structured_data.get("Academic Year")
@@ -129,4 +162,6 @@ async def upload_document(
         }
         
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
