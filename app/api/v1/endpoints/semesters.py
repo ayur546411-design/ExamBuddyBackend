@@ -9,6 +9,9 @@ from app.schemas.semester import Semester as SemesterSchema
 from app.models.user import User
 from app.api.v1.endpoints.users import get_current_user
 
+import logging
+
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.get("/", response_model=List[SemesterSchema])
@@ -19,7 +22,9 @@ async def get_semesters(
     """
     Retrieve all active semesters for the current user's department.
     """
+    logger.info(f"[Semesters API] Fetching semesters for user {current_user.email}, dept: {current_user.department_id}")
     if not current_user.department_id:
+        logger.warning(f"[Semesters API] User {current_user.email} has no department_id")
         raise HTTPException(status_code=400, detail="User is not assigned to a department")
         
     result = await db.execute(
@@ -27,4 +32,10 @@ async def get_semesters(
         .where(Semester.department_id == current_user.department_id, Semester.is_active == True)
         .order_by(Semester.semester_number.asc())
     )
-    return result.scalars().all()
+    semesters = result.scalars().all()
+    logger.info(f"[Semesters API] Found {len(semesters)} active semesters")
+    
+    if not semesters:
+        logger.warning(f"[Semesters API] No active semesters found for department {current_user.department_id}")
+        
+    return semesters

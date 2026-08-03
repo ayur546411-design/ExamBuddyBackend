@@ -12,6 +12,9 @@ from app.services.gemini_service import extract_structured_data_from_pdf_text
 from app.services.pdf_service import extract_text_from_pdf
 from app.api.v1.endpoints.users import get_current_user
 from app.models.user import User
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -26,7 +29,10 @@ async def get_documents(
     Retrieve documents relevant to the current user.
     Optionally filter by subject_id and document_type.
     """
+    logger.info(f"[Documents API] Fetching documents for user {current_user.email}, dept: {current_user.department_id}, type: {document_type}, subject: {subject_id}")
+    
     if not current_user.department_id:
+        logger.warning(f"[Documents API] User {current_user.email} has no department_id")
         raise HTTPException(status_code=400, detail="User is not assigned to a department")
         
     query = select(Document).where(
@@ -41,7 +47,13 @@ async def get_documents(
         query = query.where(Document.document_type == document_type)
         
     result = await db.execute(query.order_by(Document.created_at.desc()))
-    return result.scalars().all()
+    documents = result.scalars().all()
+    
+    logger.info(f"[Documents API] Found {len(documents)} documents")
+    if not documents:
+        logger.warning(f"[Documents API] No documents found matching criteria")
+        
+    return documents
 
 @router.post("/upload")
 async def upload_document(
@@ -63,12 +75,15 @@ async def upload_document(
     # 1. Validate foreign keys first, auto-fallback to first available if dummy data provided
     school = await db.execute(select(School).where(School.id == school_id))
     if not school.scalar_one_or_none():
-        # Fallback for testing ease
+        logger.warning(f"[Upload API] Invalid school_id '{school_id}', auto-falling back")
+        # Try to use current_user's school if logged in? We don't have current_user here by default for upload testing
         first_school = (await db.execute(select(School))).scalars().first()
         school_id = first_school.id if first_school else None
         
     department = await db.execute(select(Department).where(Department.id == department_id))
     if not department.scalar_one_or_none():
+        logger.warning(f"[Upload API] Invalid department_id '{department_id}', auto-falling back")
+        # Ensure we pick a department from the same school
         first_dept = (await db.execute(select(Department).where(Department.school_id == school_id))).scalars().first()
         department_id = first_dept.id if first_dept else None
         
