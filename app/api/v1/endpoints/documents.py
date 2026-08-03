@@ -71,6 +71,8 @@ async def upload_document(
     """
     from app.models.school import School
     from app.models.department import Department
+    from app.models.semester import Semester
+    from app.models.subject import Subject
     
     # 1. Validate foreign keys first, auto-fallback to first available if dummy data provided
     school = await db.execute(select(School).where(School.id == school_id))
@@ -148,6 +150,79 @@ async def upload_document(
         
         for entity in entities:
             try:
+                # 1. Dynamic Semester Parsing & Creation
+                entity_semester_id = semester_id
+                extracted_semester = entity.get("Semester")
+                if extracted_semester:
+                    try:
+                        # Extract first number from the string (e.g., "Semester 3" -> 3)
+                        import re
+                        sem_num_match = re.search(r'\d+', str(extracted_semester))
+                        if sem_num_match:
+                            sem_num = int(sem_num_match.group())
+                            
+                            # Find or Create Semester
+                            sem_query = await db.execute(
+                                select(Semester).where(
+                                    Semester.department_id == department_id,
+                                    Semester.semester_number == sem_num
+                                )
+                            )
+                            found_sem = sem_query.scalars().first()
+                            
+                            if found_sem:
+                                entity_semester_id = found_sem.id
+                            else:
+                                import uuid
+                                new_sem = Semester(
+                                    id=str(uuid.uuid4()),
+                                    department_id=department_id,
+                                    semester_number=sem_num,
+                                    is_active=True
+                                )
+                                db.add(new_sem)
+                                await db.commit()
+                                await db.refresh(new_sem)
+                                entity_semester_id = new_sem.id
+                                logger.info(f"[Upload API] Auto-created Semester {sem_num} for dept {department_id}")
+                    except Exception as e:
+                        logger.warning(f"[Upload API] Failed to auto-create semester from '{extracted_semester}': {e}")
+                
+                # 2. Dynamic Subject Parsing & Creation
+                entity_subject_id = subject_id
+                subject_name = entity.get("Subject Name")
+                subject_code = entity.get("Subject Code", "")
+                
+                if subject_name and entity_semester_id:
+                    # Find or Create Subject
+                    subj_query = await db.execute(
+                        select(Subject).where(
+                            Subject.semester_id == entity_semester_id,
+                            Subject.name.ilike(f"%{subject_name}%")
+                        )
+                    )
+                    found_subj = subj_query.scalars().first()
+                    
+                    if found_subj:
+                        entity_subject_id = found_subj.id
+                    else:
+                        import uuid
+                        new_subj = Subject(
+                            id=str(uuid.uuid4()),
+                            school_id=school_id,
+                            department_id=department_id,
+                            semester_id=entity_semester_id,
+                            name=subject_name,
+                            code=subject_code if subject_code else f"AUTO-{str(uuid.uuid4())[:4]}",
+                            credits=entity.get("Credits", 0) or 0
+                        )
+                        db.add(new_subj)
+                        await db.commit()
+                        await db.refresh(new_subj)
+                        entity_subject_id = new_subj.id
+                        logger.info(f"[Upload API] Auto-created Subject '{subject_name}' for semester {entity_semester_id}")
+                
+                # 3. Document Creation
                 # Infer title based on doc type
                 title = file.filename
                 if doc_type_enum == DocumentTypeEnum.syllabus and entity.get("Subject Name"):
@@ -178,17 +253,18 @@ async def upload_document(
                     structured_json=entity,
                     school_id=school_id,
                     department_id=department_id,
-                    semester_id=semester_id,
-                    subject_id=subject_id
+                    semester_id=entity_semester_id,
+                    subject_id=entity_subject_id
                 )
                 db.add(new_doc)
+                await db.commit() # Commit individually to ensure foreign keys are saved
                 inserted_count += 1
             except Exception as e:
+                # If an entity fails, rollback the transaction state so the loop can continue
+                await db.rollback()
                 skipped_count += 1
                 logger.error(f"[Upload API] Skipped entity due to error: {str(e)}\nEntity: {entity}")
                 
-        await db.commit()
-        
         logger.info(f"[Upload API] Upload complete. Inserted: {inserted_count}, Skipped: {skipped_count}")
         
         return {
