@@ -126,55 +126,75 @@ async def upload_document(
             print(f"Gemini extraction failed: {gemini_e}")
             structured_data = {"error": "Failed to extract metadata with Gemini"}
         
-        # 4. Save to Database
-        # Try to infer title from JSON, otherwise fallback to filename
-        title = file.filename
-        if structured_data.get("Subject Name"):
-            title = f"{structured_data['Subject Name']} {doc_type_enum.value.capitalize()}"
-        elif structured_data.get("Title"):
-            title = structured_data["Title"]
-            
-        if not title:
-            title = file.filename
-            
-        description = structured_data.get("Summary", "")
-        if description is None:
-            description = ""
-            
-        keywords_list = structured_data.get("Keywords", [])
-        if keywords_list is None:
-            keywords = ""
+        # 4. Process all entities in structured_json and Save to Database
+        entities = []
+        if doc_type_enum == DocumentTypeEnum.syllabus and "Subjects" in structured_data:
+            entities = structured_data["Subjects"]
+        elif doc_type_enum == DocumentTypeEnum.pyq and "QuestionPapers" in structured_data:
+            entities = structured_data["QuestionPapers"]
+        elif doc_type_enum == DocumentTypeEnum.academic_calendar and "Events" in structured_data:
+            # Calendar is a single document containing an array of events
+            # We don't want 50 different Document rows for 50 events. We want 1 document that holds the events array
+            entities = [structured_data]
         else:
-            keywords = ", ".join(keywords_list) if isinstance(keywords_list, list) else str(keywords_list)
-        
-        # If academic year isn't provided, see if Gemini found it
-        final_academic_year = academic_year or structured_data.get("Academic Year")
+            # Fallback for generic documents or if the model ignored the array wrapper
+            entities = [structured_data]
+            
+        logger.info(f"[Upload API] PDF uploaded. Total pages extracted: {len(pdf_text) // 2000 + 1}. Total text extracted: {len(pdf_text)} characters.")
+        logger.info(f"[Upload API] Gemini returned {len(entities)} entities from the document.")
 
-        new_doc = Document(
-            document_type=doc_type_enum,
-            cloudinary_url=cloudinary_url,
-            cloudinary_public_id=cloudinary_public_id,
-            file_size=file_size,
-            file_type=file_format,
-            title=title,
-            description=description,
-            academic_year=final_academic_year,
-            keywords=keywords,
-            extracted_text=pdf_text,
-            structured_json=structured_data,
-            school_id=school_id,
-            department_id=department_id,
-            semester_id=semester_id,
-            subject_id=subject_id
-        )
+        inserted_count = 0
+        skipped_count = 0
         
-        db.add(new_doc)
+        for entity in entities:
+            try:
+                # Infer title based on doc type
+                title = file.filename
+                if doc_type_enum == DocumentTypeEnum.syllabus and entity.get("Subject Name"):
+                    title = f"{entity['Subject Name']} {doc_type_enum.value.capitalize()}"
+                elif doc_type_enum == DocumentTypeEnum.pyq and entity.get("Subject Name"):
+                    title = f"{entity['Subject Name']} PYQ"
+                elif entity.get("Title"):
+                    title = entity["Title"]
+                    
+                description = entity.get("Summary", "") or ""
+                
+                keywords_list = entity.get("Keywords", [])
+                keywords = ", ".join(keywords_list) if isinstance(keywords_list, list) else str(keywords_list or "")
+                
+                final_academic_year = academic_year or entity.get("Academic Year")
+                
+                new_doc = Document(
+                    document_type=doc_type_enum,
+                    cloudinary_url=cloudinary_url,
+                    cloudinary_public_id=cloudinary_public_id,
+                    file_size=file_size,
+                    file_type=file_format,
+                    title=title,
+                    description=description,
+                    academic_year=final_academic_year,
+                    keywords=keywords,
+                    extracted_text=pdf_text,
+                    structured_json=entity,
+                    school_id=school_id,
+                    department_id=department_id,
+                    semester_id=semester_id,
+                    subject_id=subject_id
+                )
+                db.add(new_doc)
+                inserted_count += 1
+            except Exception as e:
+                skipped_count += 1
+                logger.error(f"[Upload API] Skipped entity due to error: {str(e)}\nEntity: {entity}")
+                
         await db.commit()
-        await db.refresh(new_doc)
+        
+        logger.info(f"[Upload API] Upload complete. Inserted: {inserted_count}, Skipped: {skipped_count}")
         
         return {
             "message": "Document processed and saved to database successfully",
-            "document_id": new_doc.id,
+            "inserted_entities": inserted_count,
+            "skipped_entities": skipped_count,
             "cloudinary_url": cloudinary_url,
             "structured_json": structured_data
         }

@@ -9,26 +9,34 @@ logger = logging.getLogger(__name__)
 genai.configure(api_key=settings.GEMINI_API_KEY)
 
 def _get_prompt_for_type(doc_type: str, text: str) -> str:
-    base_instructions = "Analyze the following extracted PDF text and strictly output ONLY valid JSON format. Do not include markdown code blocks or any other text before or after the JSON.\n\n"
+    base_instructions = (
+        "Analyze the ENTIRE provided PDF text. Do not stop after the first detected entity. "
+        "Extract every single subject, question paper, or event found in the document. "
+        "Strictly output ONLY valid JSON format. Do not include markdown code blocks or any other text before or after the JSON.\n\n"
+    )
     
     if doc_type == "syllabus":
         return base_instructions + f"""
-Format the syllabus into this JSON structure:
+Format the syllabus into this JSON structure containing an array of ALL subjects found:
 {{
-  "Semester": "string or null",
-  "Subject Name": "string or null",
-  "Subject Code": "string or null",
-  "Credits": "number or null",
-  "Units": [
+  "Subjects": [
     {{
-      "Unit Name": "string",
-      "Topics": ["string"]
+      "Semester": "string or null",
+      "Subject Name": "string or null",
+      "Subject Code": "string or null",
+      "Credits": "number or null",
+      "Units": [
+        {{
+          "Unit Name": "string",
+          "Topics": ["string"]
+        }}
+      ],
+      "Learning Outcomes": ["string"],
+      "Practicals": ["string"],
+      "Reference Books": ["string"],
+      "Keywords": ["string"]
     }}
-  ],
-  "Learning Outcomes": ["string"],
-  "Practicals": ["string"],
-  "Reference Books": ["string"],
-  "Keywords": ["string"]
+  ]
 }}
 
 Extracted Text:
@@ -36,27 +44,31 @@ Extracted Text:
 """
     elif doc_type == "pyq":
         return base_instructions + f"""
-Format the Previous Year Question Paper into this JSON structure:
+Format the Previous Year Question Papers into this JSON structure containing an array of ALL question papers found:
 {{
-  "Subject Name": "string or null",
-  "Subject Code": "string or null",
-  "Semester": "string or null",
-  "Academic Year": "string or null",
-  "Exam Type": "string or null",
-  "Total Marks": "number or null",
-  "Duration": "string or null",
-  "Questions": [
+  "QuestionPapers": [
     {{
-      "Question Number": "string",
-      "Question Text": "string",
-      "Marks": "number or null",
-      "Unit": "string or null"
+      "Subject Name": "string or null",
+      "Subject Code": "string or null",
+      "Semester": "string or null",
+      "Academic Year": "string or null",
+      "Exam Type": "string or null",
+      "Total Marks": "number or null",
+      "Duration": "string or null",
+      "Questions": [
+        {{
+          "Question Number": "string",
+          "Question Text": "string",
+          "Marks": "number or null",
+          "Unit": "string or null"
+        }}
+      ],
+      "Unit-wise Question Mapping": {{"Unit 1": ["Question 1"]}},
+      "Frequently Asked Questions": ["string"],
+      "Important Topics": ["string"],
+      "Keywords": ["string"]
     }}
-  ],
-  "Unit-wise Question Mapping": {{"Unit 1": ["Question 1"]}},
-  "Frequently Asked Questions": ["string"],
-  "Important Topics": ["string"],
-  "Keywords": ["string"]
+  ]
 }}
 
 Extracted Text:
@@ -64,13 +76,14 @@ Extracted Text:
 """
     elif doc_type == "academic_calendar":
         return base_instructions + f"""
-Format the Academic Calendar into an array of events within this JSON structure:
+Format the Academic Calendar into this JSON structure containing an array of ALL events found:
 {{
   "Events": [
     {{
       "event_title": "string",
       "event_date": "YYYY-MM-DD",
-      "description": "string or null"
+      "description": "string or null",
+      "event_type": "string (e.g. standard, restricted, academic)"
     }}
   ]
 }}
