@@ -29,10 +29,10 @@ async def get_documents(
     Retrieve documents relevant to the current user.
     Optionally filter by subject_id and document_type.
     """
-    logger.info(f"[Documents API] Fetching documents for user {current_user.email}, dept: {current_user.department_id}, type: {document_type}, subject: {subject_id}")
+    logger.info(f"[Documents API] Fetching documents for user {current_user.full_name}, dept: {current_user.department_id}, type: {document_type}, subject: {subject_id}")
     
     if not current_user.department_id:
-        logger.warning(f"[Documents API] User {current_user.email} has no department_id")
+        logger.warning(f"[Documents API] User {current_user.full_name} has no department_id")
         raise HTTPException(status_code=400, detail="User is not assigned to a department")
         
     query = select(Document).where(

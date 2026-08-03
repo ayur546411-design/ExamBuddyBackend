@@ -26,7 +26,9 @@ async def onboard_student(user_in: UserCreate, db: AsyncSession = Depends(get_db
     user_id = str(uuid.uuid4())
     
     # We set a dummy password for the database constraint since they won't use it directly
-    dummy_password = str(uuid.uuid4())
+    # Bcrypt limits passwords to 72 bytes. uuid.uuid4() string is 36 chars.
+    # To be perfectly safe across all encoding layers, we truncate to 32 chars.
+    dummy_password = str(uuid.uuid4())[:32]
     
     user = User(
         id=user_id,

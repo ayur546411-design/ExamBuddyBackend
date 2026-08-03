@@ -24,10 +24,10 @@ async def get_subjects(
     Retrieve all active subjects for the current user's department.
     Optionally filter by semester_id.
     """
-    logger.info(f"[Subjects API] Fetching subjects for user {current_user.email}, dept: {current_user.department_id}, semester: {semester_id}")
+    logger.info(f"[Subjects API] Fetching subjects for user {current_user.full_name}, dept: {current_user.department_id}, semester: {semester_id}")
     
     if not current_user.department_id:
-        logger.warning(f"[Subjects API] User {current_user.email} has no department_id")
+        logger.warning(f"[Subjects API] User {current_user.full_name} has no department_id")
         raise HTTPException(status_code=400, detail="User is not assigned to a department")
         
     query = select(Subject).where(

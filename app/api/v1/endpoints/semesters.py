@@ -22,9 +22,9 @@ async def get_semesters(
     """
     Retrieve all active semesters for the current user's department.
     """
-    logger.info(f"[Semesters API] Fetching semesters for user {current_user.email}, dept: {current_user.department_id}")
+    logger.info(f"[Semesters API] Fetching semesters for user {current_user.full_name}, dept: {current_user.department_id}")
     if not current_user.department_id:
-        logger.warning(f"[Semesters API] User {current_user.email} has no department_id")
+        logger.warning(f"[Semesters API] User {current_user.full_name} has no department_id")
         raise HTTPException(status_code=400, detail="User is not assigned to a department")
         
     result = await db.execute(
