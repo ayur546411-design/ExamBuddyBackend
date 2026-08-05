@@ -150,16 +150,35 @@ async def upload_document(
         
         for entity in entities:
             try:
+                # Helper to convert roman numeral to int
+                def parse_semester(sem_str):
+                    if not sem_str or str(sem_str).strip().lower() == "null":
+                        return None
+                    sem_str = str(sem_str).upper()
+                    import re
+                    # Check for digits first
+                    digit_match = re.search(r'\d+', sem_str)
+                    if digit_match:
+                        return int(digit_match.group())
+                    
+                    # Check for roman numerals
+                    roman_map = {'I': 1, 'II': 2, 'III': 3, 'IV': 4, 'V': 5, 'VI': 6, 'VII': 7, 'VIII': 8, 'IX': 9, 'X': 10}
+                    # Extract standalone roman numeral words
+                    roman_match = re.search(r'\b(I|II|III|IV|V|VI|VII|VIII|IX|X)\b', sem_str)
+                    if roman_match:
+                        return roman_map.get(roman_match.group())
+                    return None
+
                 # 1. Dynamic Semester Parsing & Creation
                 entity_semester_id = semester_id
                 extracted_semester = entity.get("Semester")
-                if extracted_semester:
+                
+                sem_num = parse_semester(extracted_semester)
+                if not sem_num:
+                    sem_num = 1 # Fallback to Semester 1 if missing or unparseable to avoid data loss
+                
+                if sem_num:
                     try:
-                        # Extract first number from the string (e.g., "Semester 3" -> 3)
-                        import re
-                        sem_num_match = re.search(r'\d+', str(extracted_semester))
-                        if sem_num_match:
-                            sem_num = int(sem_num_match.group())
                             
                             # Find or Create Semester
                             sem_query = await db.execute(
