@@ -110,7 +110,19 @@ async def extract_structured_data_from_pdf_text(pdf_text: str, document_type: st
     """
     Sends extracted PDF text to Gemini to generate structured JSON data based on document type.
     """
-    prompt = _get_prompt_for_type(document_type.value if hasattr(document_type, 'value') else document_type, pdf_text)
+    CHUNK_SIZE = 25000
+    OVERLAP = 2000
+    
+    chunks = []
+    start = 0
+    while start < len(pdf_text):
+        end = start + CHUNK_SIZE
+        chunks.append(pdf_text[start:end])
+        start += CHUNK_SIZE - OVERLAP
+        
+    all_subjects = []
+    all_events = []
+    all_pyqs = []
     
     models_to_try = [
         'gemini-flash-latest',
@@ -120,19 +132,68 @@ async def extract_structured_data_from_pdf_text(pdf_text: str, document_type: st
         'gemini-pro-latest'
     ]
     
-    for model_name in models_to_try:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
-            raw_text = response.text.strip()
+    for i, chunk in enumerate(chunks):
+        logger.info(f"Processing chunk {i+1}/{len(chunks)} of PDF text ({len(chunk)} chars)...")
+        prompt = _get_prompt_for_type(document_type.value if hasattr(document_type, 'value') else document_type, chunk)
+        
+        chunk_success = False
+        import time
+        import asyncio
+        for retry in range(3):
+            for model_name in models_to_try:
+                try:
+                    model = genai.GenerativeModel(model_name)
+                    response = model.generate_content(prompt)
+                    raw_text = response.text.strip()
+                    
+                    cleaned_text = re.sub(r'^```json\s*', '', raw_text)
+                    cleaned_text = re.sub(r'\s*```$', '', cleaned_text).strip()
+                    
+                    parsed = json.loads(cleaned_text)
+                    
+                    if "Subjects" in parsed:
+                        all_subjects.extend(parsed["Subjects"])
+                    elif "QuestionPapers" in parsed:
+                        all_pyqs.extend(parsed["QuestionPapers"])
+                    elif "Events" in parsed:
+                        all_events.extend(parsed["Events"])
+                    else:
+                        pass
+                        
+                    chunk_success = True
+                    break # Break out of models loop
+                except Exception as e:
+                    if "429" in str(e):
+                        logger.warning(f"Rate limited on {model_name}. Trying next model...")
+                    else:
+                        logger.warning(f"Gemini API failed with model {model_name} on chunk {i+1}: {str(e)}")
             
-            # Clean the response in case it contains markdown blocks like ```json ... ```
-            cleaned_text = re.sub(r'^```json\s*', '', raw_text)
-            cleaned_text = re.sub(r'\s*```$', '', cleaned_text).strip()
+            if chunk_success:
+                break # Break out of retries loop
+                
+            logger.warning(f"All models failed for chunk {i+1} on attempt {retry+1}. Sleeping for 30s before retry...")
+            await asyncio.sleep(30) 
             
-            return json.loads(cleaned_text)
-        except Exception as e:
-            logger.error(f"Gemini API failed with model {model_name}: {str(e)}")
-            if model_name == models_to_try[-1]:
-                # All models failed
-                return {"error": "Failed to parse structured JSON from Gemini using all available models.", "details": str(e)}
+        if not chunk_success:
+            logger.error(f"Failed to parse chunk {i+1} using all available models.")
+            
+    # Deduplicate entities
+    def deduplicate(entities, key_fields):
+        unique = []
+        seen = set()
+        for ent in entities:
+            key = "_".join(str(ent.get(k, "")).strip().lower() for k in key_fields)
+            if key not in seen and key.replace("_", "") != "":
+                seen.add(key)
+                unique.append(ent)
+        return unique
+
+    final_dict = {}
+    if all_subjects:
+        final_dict["Subjects"] = deduplicate(all_subjects, ["Subject Code", "Subject Name"])
+    if all_pyqs:
+        final_dict["QuestionPapers"] = deduplicate(all_pyqs, ["Subject Code", "Subject Name"])
+    if all_events:
+        final_dict["Events"] = deduplicate(all_events, ["event_title", "event_date"])
+        
+    return final_dict if final_dict else {"error": "Failed to parse structured JSON from Gemini using all available models."}
