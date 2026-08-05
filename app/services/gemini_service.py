@@ -126,10 +126,9 @@ async def extract_structured_data_from_pdf_text(pdf_text: str, document_type: st
     
     models_to_try = [
         'gemini-flash-latest',
-        'gemini-2.5-flash',
-        'gemini-2.0-flash',
+        'gemini-pro-latest',
         'gemini-3.5-flash',
-        'gemini-pro-latest'
+        'gemini-2.0-flash'
     ]
     
     for i, chunk in enumerate(chunks):
