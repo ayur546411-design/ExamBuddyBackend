@@ -1,6 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.orm import load_only
 from typing import Optional, List
 import json
 
@@ -27,32 +28,53 @@ async def get_documents(
 ):
     """
     Retrieve documents relevant to the current user.
-    Optionally filter by subject_id and document_type.
+    Returns only essential fields (no extracted_text / structured_json) for fast list loading.
     """
-    logger.info(f"[Documents API] Fetching documents for user {current_user.full_name}, dept: {current_user.department_id}, type: {document_type}, subject: {subject_id}")
-    
+    import time
+    t0 = time.perf_counter()
+    logger.info(f"[Documents API] Fetching documents dept={current_user.department_id} type={document_type} subject={subject_id}")
+
     if not current_user.department_id:
-        logger.warning(f"[Documents API] User {current_user.full_name} has no department_id")
         raise HTTPException(status_code=400, detail="User is not assigned to a department")
-        
-    query = select(Document).where(
-        Document.department_id == current_user.department_id,
-        Document.status == "active"
+
+    # Only fetch lightweight columns — skip extracted_text and structured_json
+    query = (
+        select(Document)
+        .options(load_only(
+            Document.id,
+            Document.title,
+            Document.description,
+            Document.document_type,
+            Document.academic_year,
+            Document.cloudinary_url,
+            Document.thumbnail_url,
+            Document.file_size,
+            Document.file_type,
+            Document.keywords,
+            Document.status,
+            Document.school_id,
+            Document.department_id,
+            Document.semester_id,
+            Document.subject_id,
+            Document.uploaded_by_admin,
+            Document.created_at,
+        ))
+        .where(
+            Document.department_id == current_user.department_id,
+            Document.status == "active"
+        )
     )
-    
+
     if subject_id:
         query = query.where(Document.subject_id == subject_id)
-        
     if document_type:
         query = query.where(Document.document_type == document_type)
-        
+
     result = await db.execute(query.order_by(Document.created_at.desc()))
     documents = result.scalars().all()
-    
-    logger.info(f"[Documents API] Found {len(documents)} documents")
-    if not documents:
-        logger.warning(f"[Documents API] No documents found matching criteria")
-        
+
+    elapsed = round((time.perf_counter() - t0) * 1000, 2)
+    logger.info(f"[Documents API] Returned {len(documents)} docs in {elapsed}ms")
     return documents
 
 @router.post("/upload")

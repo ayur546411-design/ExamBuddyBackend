@@ -1,7 +1,14 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.core.exceptions import APIException, api_exception_handler, general_exception_handler
+import time
+import logging
+import datetime
+
+logger = logging.getLogger(__name__)
+APP_START_TIME = time.time()
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -13,11 +20,28 @@ def create_app() -> FastAPI:
     # Set all CORS enabled origins
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"], # In production, restrict this
+        allow_origins=["*"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # ── Timing + Structured Logging Middleware ──────────────────────────────
+    @app.middleware("http")
+    async def timing_middleware(request: Request, call_next):
+        start = time.perf_counter()
+        response = await call_next(request)
+        duration_ms = round((time.perf_counter() - start) * 1000, 2)
+        size = response.headers.get("content-length", "?")
+        logger.info(
+            f"[API] {request.method} {request.url.path} "
+            f"| status={response.status_code} "
+            f"| duration={duration_ms}ms "
+            f"| size={size}B "
+            f"| params={dict(request.query_params)}"
+        )
+        response.headers["X-Process-Time"] = str(duration_ms)
+        return response
 
     from fastapi.exceptions import RequestValidationError
     from fastapi import Request
@@ -49,7 +73,17 @@ def create_app() -> FastAPI:
     @app.get("/")
     async def root():
         return {"message": "Welcome to ExamBuddy API"}
-        
+
+    @app.get("/health")
+    async def health_check():
+        """Lightweight health endpoint — used by mobile app to wake Render and check server status."""
+        return {
+            "status": "ok",
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "version": settings.VERSION,
+            "uptime_seconds": round(time.time() - APP_START_TIME, 1)
+        }
+
     return app
 
 app = create_app()
