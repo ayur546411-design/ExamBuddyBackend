@@ -79,43 +79,67 @@ async def get_subject_questions(
         if not doc.structured_json:
             continue
             
+        sj = doc.structured_json
         academic_year = doc.academic_year
-        exam_type = None
-        questions_array = []
         
-        # Determine how QuestionPapers are structured
-        if isinstance(doc.structured_json, dict) and "QuestionPapers" in doc.structured_json:
-            for paper in doc.structured_json["QuestionPapers"]:
-                year = paper.get("Academic Year") or academic_year
-                type_ = paper.get("Exam Type")
-                for q in paper.get("Questions", []):
-                    # Clean the question text
-                    text = q.get("Question Text", "")
-                    if text:
-                        normalized = text.lower().strip()
-                        if normalized in question_texts:
-                            frequent_texts.add(normalized)
-                        else:
-                            question_texts.add(normalized)
-                            
-                        # Try parsing marks to float
-                        marks = q.get("Marks")
-                        try:
-                            marks = float(marks)
-                        except (ValueError, TypeError):
-                            marks = None
-                            
-                        all_questions.append({
-                            "id": str(uuid.uuid4()),
-                            "question_number": str(q.get("Question Number", "")),
-                            "question_text": text,
-                            "marks": marks,
-                            "unit": str(q.get("Unit", "")) if q.get("Unit") else None,
-                            "academic_year": str(year) if year else None,
-                            "exam_type": str(type_) if type_ else None,
-                            "source_document_id": doc.id,
-                            "_normalized_text": normalized # Internal field for 2nd pass
-                        })
+        # Collect a flat list of (paper_dict, year, exam_type) tuples to process
+        papers_to_process = []
+        
+        if isinstance(sj, dict):
+            if "QuestionPapers" in sj:
+                # Legacy/alternative format: wrapper with array
+                for paper in sj["QuestionPapers"]:
+                    papers_to_process.append(paper)
+            elif "Questions" in sj:
+                # ✅ Standard format: each document IS one QuestionPaper entity
+                papers_to_process.append(sj)
+            else:
+                # Unknown dict structure – skip
+                continue
+        elif isinstance(sj, list):
+            # In case it's a raw list of question paper objects
+            papers_to_process.extend(sj)
+        
+        for paper in papers_to_process:
+            year = paper.get("Academic Year") or academic_year
+            type_ = paper.get("Exam Type")
+            questions_raw = paper.get("Questions", [])
+            
+            if not isinstance(questions_raw, list):
+                continue
+                
+            for q in questions_raw:
+                if not isinstance(q, dict):
+                    continue
+                    
+                text = q.get("Question Text", "") or ""
+                text = text.strip()
+                if not text:
+                    continue
+                    
+                normalized = text.lower()
+                if normalized in question_texts:
+                    frequent_texts.add(normalized)
+                else:
+                    question_texts.add(normalized)
+                    
+                marks = q.get("Marks")
+                try:
+                    marks = float(marks)
+                except (ValueError, TypeError):
+                    marks = None
+                    
+                all_questions.append({
+                    "id": str(uuid.uuid4()),
+                    "question_number": str(q.get("Question Number", "") or ""),
+                    "question_text": text,
+                    "marks": marks,
+                    "unit": str(q.get("Unit") or "").strip() or None,
+                    "academic_year": str(year).strip() if year else None,
+                    "exam_type": str(type_).strip() if type_ else None,
+                    "source_document_id": doc.id,
+                    "_normalized_text": normalized
+                })
                         
     # Second pass: tag frequent questions
     final_questions = []
@@ -123,5 +147,6 @@ async def get_subject_questions(
         q["frequently_asked"] = q["_normalized_text"] in frequent_texts
         del q["_normalized_text"]
         final_questions.append(q)
-        
+    
+    logger.info(f"[Subjects API] Returning {len(final_questions)} questions for subject {subject_id} from {len(documents)} documents")
     return final_questions
