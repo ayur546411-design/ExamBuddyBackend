@@ -7,8 +7,8 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 ENV_PATH = os.path.join(ROOT_DIR, ".env")
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "GGV Exam Guru API"
-    VERSION: str = "1.0.0"
+    PROJECT_NAME: str = "ExamBuddy API"
+    VERSION: str = "1.1.0"
     API_V1_STR: str = "/api/v1"
 
     # Supabase / DB
