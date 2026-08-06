@@ -196,3 +196,22 @@ async def extract_structured_data_from_pdf_text(pdf_text: str, document_type: st
         final_dict["Events"] = deduplicate(all_events, ["event_title", "event_date"])
         
     return final_dict if final_dict else {"error": "Failed to parse structured JSON from Gemini using all available models."}
+
+async def generate_answer(question_text: str) -> str:
+    """Generates an answer for a PYQ question using Gemini."""
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        prompt = f"""
+You are an expert academic tutor for university students. 
+Please provide a comprehensive, well-structured, and accurate answer to the following exam question. 
+If the question asks for code, provide clean code with explanations.
+If the question is theoretical, explain it with points or paragraphs.
+Format your answer using markdown for readability.
+
+Question: {question_text}
+"""
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        logger.error(f"Error generating AI answer: {e}")
+        return "I'm sorry, I couldn't generate an answer at this time due to an error."

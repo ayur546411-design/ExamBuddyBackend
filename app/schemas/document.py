@@ -29,3 +29,14 @@ class Document(DocumentBase):
 
     class Config:
         from_attributes = True
+
+class QuestionSchema(BaseModel):
+    id: str
+    question_number: str
+    question_text: str
+    marks: Optional[float] = None
+    unit: Optional[str] = None
+    academic_year: Optional[str] = None
+    exam_type: Optional[str] = None
+    frequently_asked: bool = False
+    source_document_id: str

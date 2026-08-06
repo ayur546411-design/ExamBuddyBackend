@@ -37,17 +37,18 @@ def create_app() -> FastAPI:
     app.add_exception_handler(Exception, general_exception_handler)
 
     # Add Routers
-    from app.api.v1.endpoints import documents, auth, schools, users, semesters, subjects
+    from app.api.v1.endpoints import documents, auth, schools, users, semesters, subjects, ai
     app.include_router(auth.router, prefix=settings.API_V1_STR + "/auth", tags=["auth"])
     app.include_router(users.router, prefix=settings.API_V1_STR + "/users", tags=["users"])
     app.include_router(schools.router, prefix=settings.API_V1_STR + "/schools", tags=["schools"])
     app.include_router(semesters.router, prefix=settings.API_V1_STR + "/semesters", tags=["semesters"])
     app.include_router(subjects.router, prefix=settings.API_V1_STR + "/subjects", tags=["subjects"])
     app.include_router(documents.router, prefix=settings.API_V1_STR + "/documents", tags=["documents"])
+    app.include_router(ai.router, prefix=settings.API_V1_STR + "/ai", tags=["ai"])
 
     @app.get("/")
     async def root():
-        return {"message": "Welcome to GGV Exam Guru API"}
+        return {"message": "Welcome to ExamBuddy API"}
         
     return app
 
