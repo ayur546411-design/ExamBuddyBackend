@@ -57,15 +57,26 @@ CRITICAL RULES — YOU MUST FOLLOW EVERY RULE WITHOUT EXCEPTION:
 7. If a subject has reference books, list ALL books.
 8. If a subject has learning outcomes/objectives, list ALL of them.
 9. Preserve exact subject names, codes, and numbering.
-10. If the semester is not explicitly stated for a subject, make your best inference from context.
-11. This is chunk {chunk_index + 1} of {total_chunks} — extract all subjects visible in THIS chunk.
-12. Output ONLY valid JSON. No markdown. No explanation. No preamble.
+
+SEMESTER RULE (CRITICAL — READ CAREFULLY):
+University syllabuses often have ONE "Semester X" or "SEM-X" header at the top of a
+section, followed by many subjects that ALL belong to that same semester.
+You MUST:
+  a) Scan for semester headers like "Semester 3", "SEM III", "THIRD SEMESTER", "3rd Semester"
+  b) Apply that semester number to EVERY subject listed under that header
+  c) Keep applying it until you see a DIFFERENT semester header
+  d) NEVER return null for Semester if a semester heading appears anywhere in the surrounding text
+  e) If the entire document is for one semester (e.g. title says "IV Semester Syllabus"),
+     apply that semester to ALL subjects in the document
+
+10. This is chunk {chunk_index + 1} of {total_chunks} — extract all subjects visible in THIS chunk.
+11. Output ONLY valid JSON. No markdown. No explanation. No preamble.
 
 OUTPUT FORMAT (strictly follow this structure):
 {{
   "Subjects": [
     {{
-      "Semester": "number as string, e.g. '3' or null if unknown",
+      "Semester": "number as string, e.g. '3' — NEVER null if a semester header exists nearby",
       "Subject Name": "exact name as in document",
       "Subject Code": "exact code as in document or null",
       "Credits": number or null,
@@ -87,7 +98,7 @@ OUTPUT FORMAT (strictly follow this structure):
 TEXT TO EXTRACT FROM:
 {text}
 
-REMINDER: Extract ALL subjects. Every subject. No skipping. Return valid JSON only."""
+REMINDER: Extract ALL subjects. Apply semester from section headers to every subject. Return valid JSON only."""
 
 
 def _pyq_prompt(text: str, chunk_index: int, total_chunks: int) -> str:

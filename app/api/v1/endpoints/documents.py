@@ -213,6 +213,58 @@ async def upload_document(
         inserted_count = 0
         skipped_count = 0
         
+        # ── Post-processing: Propagate semesters from neighbours ────────────────────────
+        # University PDFs often have ONE semester header for a SECTION of subjects.
+        # Gemini may correctly tag the first subject but return null for the rest.
+        # This pass propagates the semester forward (and backward) to fill gaps.
+        def parse_semester(sem_str):
+            """Convert semester string to integer. Handles digits and roman numerals."""
+            if not sem_str or str(sem_str).strip().lower() in ("null", "none", ""):
+                return None
+            sem_str = str(sem_str).upper().strip()
+            import re
+            digit_match = re.search(r'\d+', sem_str)
+            if digit_match:
+                num = int(digit_match.group())
+                if 1 <= num <= 12:  # Valid semester range
+                    return num
+            roman_map = {'VIII': 8, 'VII': 7, 'VI': 6, 'IV': 4, 'IX': 9, 'X': 10,
+                         'III': 3, 'II': 2, 'I': 1, 'V': 5}
+            roman_match = re.search(r'\b(VIII|VII|VI|IV|IX|X|III|II|I|V)\b', sem_str)
+            if roman_match:
+                return roman_map.get(roman_match.group())
+            return None
+        
+        if doc_type_enum == DocumentTypeEnum.syllabus and entities:
+            # Forward pass: propagate last known semester to subjects with null semester
+            last_known_sem = None
+            for entity in entities:
+                sem = parse_semester(entity.get("Semester"))
+                if sem:
+                    last_known_sem = sem
+                elif last_known_sem:
+                    entity["Semester"] = str(last_known_sem)
+                    logger.info(f"[Upload] Propagated Semester {last_known_sem} to '{entity.get('Subject Name', '?')}' (was null)")
+            
+            # Backward pass: if first few subjects still have null, use the first known sem from later
+            first_known_sem = None
+            for entity in entities:
+                sem = parse_semester(entity.get("Semester"))
+                if sem:
+                    first_known_sem = sem
+                    break
+            if first_known_sem:
+                for entity in entities:
+                    if not parse_semester(entity.get("Semester")):
+                        entity["Semester"] = str(first_known_sem)
+                        logger.info(f"[Upload] Back-filled Semester {first_known_sem} to '{entity.get('Subject Name', '?')}' (backward pass)")
+            
+            # Log any subjects still without a semester
+            still_null = [e.get('Subject Name', '?') for e in entities if not parse_semester(e.get("Semester"))]
+            if still_null:
+                logger.warning(f"[Upload] {len(still_null)} subjects still have null semester after propagation: {still_null}")
+                logger.warning(f"[Upload] If a semester_id was provided in the form, it will be used as override for these.")
+        
         for entity in entities:
             try:
                 # Helper to convert roman numeral to int
@@ -235,42 +287,51 @@ async def upload_document(
                     return None
 
                 # 1. Dynamic Semester Parsing & Creation
-                entity_semester_id = semester_id
+                # Priority: (a) Gemini-extracted semester, (b) form semester_id
+                entity_semester_id = semester_id  # form-provided override as default
                 extracted_semester = entity.get("Semester")
                 
                 sem_num = parse_semester(extracted_semester)
+                
                 if not sem_num:
-                    sem_num = 1 # Fallback to Semester 1 if missing or unparseable to avoid data loss
+                    # No semester from Gemini and no propagation filled it
+                    if semester_id:
+                        # Use the form-provided semester_id directly
+                        logger.warning(f"[Upload] Subject '{entity.get('Subject Name', '?')}' has no semester from Gemini. Using form semester_id={semester_id[:8]}")
+                        # entity_semester_id already set to semester_id above
+                    else:
+                        logger.error(f"[Upload] Subject '{entity.get('Subject Name', '?')}' has no semester. Skipping to avoid wrong assignment. Upload again with semester_id form field.")
+                        skipped_count += 1
+                        continue  # Skip rather than assign to wrong semester
                 
                 if sem_num:
                     try:
-                            
-                            # Find or Create Semester
-                            sem_query = await db.execute(
-                                select(Semester).where(
-                                    Semester.department_id == department_id,
-                                    Semester.semester_number == sem_num
-                                )
+                        # Find or Create Semester by number
+                        sem_query = await db.execute(
+                            select(Semester).where(
+                                Semester.department_id == department_id,
+                                Semester.semester_number == sem_num
                             )
-                            found_sem = sem_query.scalars().first()
-                            
-                            if found_sem:
-                                entity_semester_id = found_sem.id
-                            else:
-                                import uuid
-                                new_sem = Semester(
-                                    id=str(uuid.uuid4()),
-                                    department_id=department_id,
-                                    semester_number=sem_num,
-                                    is_active=True
-                                )
-                                db.add(new_sem)
-                                await db.commit()
-                                await db.refresh(new_sem)
-                                entity_semester_id = new_sem.id
-                                logger.info(f"[Upload API] Auto-created Semester {sem_num} for dept {department_id}")
+                        )
+                        found_sem = sem_query.scalars().first()
+                        
+                        if found_sem:
+                            entity_semester_id = found_sem.id
+                        else:
+                            import uuid
+                            new_sem = Semester(
+                                id=str(uuid.uuid4()),
+                                department_id=department_id,
+                                semester_number=sem_num,
+                                is_active=True
+                            )
+                            db.add(new_sem)
+                            await db.commit()
+                            await db.refresh(new_sem)
+                            entity_semester_id = new_sem.id
+                            logger.info(f"[Upload] Auto-created Semester {sem_num} for dept {department_id[:8]}")
                     except Exception as e:
-                        logger.warning(f"[Upload API] Failed to auto-create semester from '{extracted_semester}': {e}")
+                        logger.warning(f"[Upload] Failed to find/create semester {sem_num}: {e}")
                 
                 # 2. Dynamic Subject Parsing & Creation
                 entity_subject_id = subject_id
