@@ -447,3 +447,132 @@ async def upload_document(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+
+
+@router.post("/admin/repair-semesters")
+async def repair_semester_assignments(
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Admin endpoint: Audit and repair subjects assigned to wrong semester.
+
+    Detects subjects where the subject code contains an elective slot number
+    (e.g. ITUETK3 = 3rd elective slot) that Gemini incorrectly treated as
+    a semester number (semester 3).
+
+    Steps:
+      1. Show full audit of all semesters and subjects
+      2. Detect subjects in wrong semester based on structured_json vs DB
+      3. Move mis-assigned subjects and their documents to the correct semester
+    """
+    from app.models.semester import Semester
+    from app.models.subject import Subject
+
+    report = {
+        "semesters": [],
+        "mismatches_found": 0,
+        "mismatches_fixed": 0,
+        "audit": []
+    }
+
+    # ── 1. Collect all semesters and their subjects ────────────────────────
+    all_sems = (await db.execute(
+        select(Semester).order_by(Semester.semester_number)
+    )).scalars().all()
+
+    for sem in all_sems:
+        subjects = (await db.execute(
+            select(Subject).where(Subject.semester_id == sem.id, Subject.is_active == True)
+        )).scalars().all()
+
+        sem_info = {
+            "semester_number": sem.semester_number,
+            "id": sem.id,
+            "subjects": [{"name": s.name, "code": s.code, "id": s.id} for s in subjects]
+        }
+        report["semesters"].append(sem_info)
+
+    # ── 2. Find documents whose structured_json semester != DB semester ────
+    all_docs = (await db.execute(
+        select(Document)
+        .where(Document.document_type == DocumentTypeEnum.syllabus, Document.status == "active")
+    )).scalars().all()
+
+    mismatched_docs = []
+    for doc in all_docs:
+        if not doc.semester_id:
+            continue
+        sj = doc.structured_json or {}
+        json_sem_str = str(sj.get("Semester", "")).strip()
+        if not json_sem_str or json_sem_str.lower() in ("null", "none", ""):
+            continue
+        try:
+            json_sem_num = int(json_sem_str)
+        except ValueError:
+            continue
+
+        stored_sem = await db.get(Semester, doc.semester_id)
+        if stored_sem and stored_sem.semester_number != json_sem_num:
+            mismatched_docs.append({
+                "doc_id": doc.id,
+                "title": doc.title,
+                "json_semester": json_sem_num,
+                "stored_semester": stored_sem.semester_number,
+                "subject_id": doc.subject_id
+            })
+
+    report["mismatches_found"] = len(mismatched_docs)
+    report["mismatch_details"] = mismatched_docs
+
+    # ── 3. Auto-repair: move subjects/docs to correct semester per JSON ────
+    sems_by_num = {s.semester_number: s for s in all_sems}
+    fixed = 0
+
+    for mismatch in mismatched_docs:
+        correct_num = mismatch["json_semester"]
+        target_sem = sems_by_num.get(correct_num)
+
+        if not target_sem:
+            # Create the semester if it doesn't exist
+            import uuid
+            from app.models.department import Department
+            # Use the department from the document's existing semester
+            existing_sem = await db.get(Semester, (await db.get(Document, mismatch["doc_id"])).semester_id)
+            if not existing_sem:
+                continue
+            import uuid as _uuid
+            target_sem = Semester(
+                id=str(_uuid.uuid4()),
+                department_id=existing_sem.department_id,
+                semester_number=correct_num,
+                is_active=True
+            )
+            db.add(target_sem)
+            await db.commit()
+            await db.refresh(target_sem)
+            sems_by_num[correct_num] = target_sem
+            logger.info(f"[Repair] Created Semester {correct_num}")
+
+        # Move the document
+        doc = await db.get(Document, mismatch["doc_id"])
+        if doc:
+            doc.semester_id = target_sem.id
+            db.add(doc)
+
+        # Move the subject if it exists
+        if mismatch["subject_id"]:
+            subj = await db.get(Subject, mismatch["subject_id"])
+            if subj and subj.semester_id != target_sem.id:
+                subj.semester_id = target_sem.id
+                db.add(subj)
+                logger.info(f"[Repair] Moved subject '{subj.name}' -> Semester {correct_num}")
+
+        fixed += 1
+
+    if fixed > 0:
+        await db.commit()
+
+    report["mismatches_fixed"] = fixed
+    logger.info(f"[Repair] Fixed {fixed} semester mismatches")
+
+    return report
