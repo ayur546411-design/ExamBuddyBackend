@@ -287,22 +287,29 @@ async def upload_document(
                     return None
 
                 # 1. Dynamic Semester Parsing & Creation
-                # Priority: (a) Gemini-extracted semester, (b) form semester_id
-                entity_semester_id = semester_id  # form-provided override as default
+                # Determine the correct semester number:
+                # Priority: (a) form-provided semester_id → look up its number, (b) Gemini-extracted "Semester" field
                 extracted_semester = entity.get("Semester")
-                
-                sem_num = parse_semester(extracted_semester)
+                form_semester_num = None
+                if semester_id:
+                    form_sem_res = await db.execute(select(Semester).where(Semester.id == semester_id))
+                    form_sem = form_sem_res.scalar_one_or_none()
+                    if form_sem:
+                        form_semester_num = form_sem.semester_number
+
+                sem_num = form_semester_num or parse_semester(extracted_semester)
+                entity_semester_id = semester_id  # start with form value, may be overridden below
                 
                 if not sem_num:
-                    # No semester from Gemini and no propagation filled it
-                    if semester_id:
-                        # Use the form-provided semester_id directly
-                        logger.warning(f"[Upload] Subject '{entity.get('Subject Name', '?')}' has no semester from Gemini. Using form semester_id={semester_id[:8]}")
-                        # entity_semester_id already set to semester_id above
-                    else:
-                        logger.error(f"[Upload] Subject '{entity.get('Subject Name', '?')}' has no semester. Skipping to avoid wrong assignment. Upload again with semester_id form field.")
-                        skipped_count += 1
-                        continue  # Skip rather than assign to wrong semester
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Could not determine semester for subject '{entity.get('Subject Name', '?')}'. "
+                            f"Please specify a valid semester_id in the form, or ensure the PDF contains "
+                            f"clear semester headings (e.g. 'Semester 5' or 'V Semester')."
+                        )
+                    )
+
                 
                 if sem_num:
                     try:
@@ -339,24 +346,26 @@ async def upload_document(
                 subject_code = entity.get("Subject Code", "")
                 
                 if subject_name and entity_semester_id:
-                    # Find or Create Subject
-                    # Use bidirectional ilike: DB name contains Gemini name OR Gemini name contains DB name.
-                    # This prevents duplicate subjects when Gemini returns a slightly different
-                    # abbreviation (e.g. "ML Lab" vs "Machine Learning Lab").
-                    from sqlalchemy import or_
+                    # Find or Create Subject matching the specific semester, department, and school exactly
+                    # This prevents linking a subject of the same name to the wrong semester.
                     subj_query = await db.execute(
                         select(Subject).where(
+                            Subject.school_id == school_id,
+                            Subject.department_id == department_id,
                             Subject.semester_id == entity_semester_id,
-                            or_(
-                                Subject.name.ilike(f"%{subject_name}%"),
-                                Subject.name.ilike(f"{subject_name[:10]}%")  # prefix match as fallback
-                            )
+                            Subject.name.ilike(subject_name)
                         )
                     )
                     found_subj = subj_query.scalars().first()
                     
                     if found_subj:
                         entity_subject_id = found_subj.id
+                        # If found, update its code if it was auto-generated previously and we now have a real one
+                        if subject_code and found_subj.code.startswith("AUTO-"):
+                            found_subj.code = subject_code
+                            db.add(found_subj)
+                            await db.commit()
+                            logger.info(f"[Upload API] Updated subject code for '{subject_name}' to '{subject_code}'")
                     else:
                         import uuid
                         new_subj = Subject(
