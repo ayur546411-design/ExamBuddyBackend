@@ -42,9 +42,95 @@ PAGES_PER_CHUNK = 8       # Process 8 pages per Gemini call
 MAX_CHARS_PER_CHUNK = 30000  # Hard cap per chunk
 
 
+# ── Pre-extraction semester detection ────────────────────────────────────────
+
+def detect_semester_from_text(pdf_text: str) -> int | None:
+    """
+    Detect the semester number from raw PDF text BEFORE sending to Gemini.
+    Scans headings, titles, and structured patterns.
+    Returns an integer (1-8) or None if uncertain.
+
+    This prevents Gemini from guessing semester from subject codes like
+    'ITUETK3' (3rd elective slot ≠ Semester 3).
+    """
+    text = pdf_text[:5000]  # Focus on first ~5000 chars (cover page + headings)
+    text_upper = text.upper()
+
+    ROMAN = {
+        'VIII': 8, 'VII': 7, 'VI': 6, 'IV': 4, 'IX': 9, 'X': 10,
+        'III': 3, 'II': 2, 'I': 1, 'V': 5
+    }
+
+    def roman_to_int(s: str) -> int | None:
+        return ROMAN.get(s.upper())
+
+    # Pattern order: most specific → least specific
+    patterns = [
+        # "Semester 5 Syllabus" / "5th Semester" / "V Semester"
+        (r'(?:SEMESTER|SEM)[\s\-.:]*(\d{1,2})\b', 'digit'),
+        (r'\b(\d{1,2})(?:ST|ND|RD|TH)?[\s\-]*SEMESTER\b', 'digit'),
+        (r'(?:SEMESTER|SEM)[\s\-.:]*\b(VIII|VII|VI|IV|IX|X|III|II|I|V)\b', 'roman'),
+        (r'\b(VIII|VII|VI|IV|IX|X|III|II|I|V)\b[\s\-]*SEMESTER\b', 'roman'),
+        # "5th Sem" / "Sem-5"
+        (r'\bSEM[\s\-.:]*(\d{1,2})\b', 'digit'),
+        (r'\b(\d{1,2})[\s\-]*SEM\b', 'digit'),
+        # "B.Tech 5th Semester" / "Year III Sem I"
+        (r'B\.?TECH[\s\w]*?(\d{1,2})(?:ST|ND|RD|TH)?[\s\-]*(?:SEMESTER|SEM)\b', 'digit'),
+    ]
+
+    votes: dict[int, int] = {}
+
+    for pattern, kind in patterns:
+        for match in re.finditer(pattern, text_upper):
+            raw = match.group(1)
+            if kind == 'digit':
+                num = int(raw)
+            else:
+                num = roman_to_int(raw)
+            if num and 1 <= num <= 8:
+                votes[num] = votes.get(num, 0) + 1
+
+    if not votes:
+        logger.warning("[Semester-Detect] No semester found in first 5000 chars. Scanning full text...")
+        # Try full text with simplified pattern
+        for match in re.finditer(r'(?:SEMESTER|SEM)[\s\-.:]*(\d{1,2})\b', pdf_text.upper()):
+            num = int(match.group(1))
+            if 1 <= num <= 8:
+                votes[num] = votes.get(num, 0) + 1
+
+    if not votes:
+        logger.warning("[Semester-Detect] Could not determine semester from PDF text.")
+        return None
+
+    # Pick the semester with most votes (most mentions)
+    best = max(votes, key=lambda k: votes[k])
+    logger.info(f"[Semester-Detect] Vote results: {votes} → Detected Semester {best}")
+    return best
+
+
 # ── Prompts ──────────────────────────────────────────────────────────────────
 
-def _syllabus_prompt(text: str, chunk_index: int, total_chunks: int) -> str:
+def _syllabus_prompt(text: str, chunk_index: int, total_chunks: int, confirmed_semester: int | None = None) -> str:
+    # Build semester instruction based on whether we pre-detected the semester
+    if confirmed_semester:
+        semester_instruction = f"""
+*** CONFIRMED SEMESTER = {confirmed_semester} ***
+This has been verified from the PDF title/cover page BEFORE you were called.
+Every single subject in this document belongs to Semester {confirmed_semester}.
+You MUST set \"Semester\": \"{confirmed_semester}\" for EVERY subject extracted.
+Do NOT use any other semester number. Do NOT use 'null'.
+Do NOT infer semester from subject codes (e.g. 'ITUETK3' is an elective slot number, NOT semester 3)."""
+    else:
+        semester_instruction = """
+SEMESTER RULE (CRITICAL):
+University syllabuses often have ONE "Semester X" header at the top of a section,
+following which ALL subjects belong to that semester.
+  a) Scan for semester headers like "Semester 3", "SEM III", "THIRD SEMESTER"
+  b) Apply that semester number to EVERY subject under that header
+  c) Keep applying it until a DIFFERENT semester header appears
+  d) NEVER infer semester from subject codes (e.g. 'ITUETK3' = 3rd elective slot, NOT semester 3)
+  e) NEVER return null — use your best inference from document structure"""
+
     return f"""You are a university syllabus data extraction engine.
 
 CRITICAL RULES — YOU MUST FOLLOW EVERY RULE WITHOUT EXCEPTION:
@@ -57,17 +143,7 @@ CRITICAL RULES — YOU MUST FOLLOW EVERY RULE WITHOUT EXCEPTION:
 7. If a subject has reference books, list ALL books.
 8. If a subject has learning outcomes/objectives, list ALL of them.
 9. Preserve exact subject names, codes, and numbering.
-
-SEMESTER RULE (CRITICAL — READ CAREFULLY):
-University syllabuses often have ONE "Semester X" or "SEM-X" header at the top of a
-section, followed by many subjects that ALL belong to that same semester.
-You MUST:
-  a) Scan for semester headers like "Semester 3", "SEM III", "THIRD SEMESTER", "3rd Semester"
-  b) Apply that semester number to EVERY subject listed under that header
-  c) Keep applying it until you see a DIFFERENT semester header
-  d) NEVER return null for Semester if a semester heading appears anywhere in the surrounding text
-  e) If the entire document is for one semester (e.g. title says "IV Semester Syllabus"),
-     apply that semester to ALL subjects in the document
+{semester_instruction}
 
 10. This is chunk {chunk_index + 1} of {total_chunks} — extract all subjects visible in THIS chunk.
 11. Output ONLY valid JSON. No markdown. No explanation. No preamble.
@@ -76,7 +152,7 @@ OUTPUT FORMAT (strictly follow this structure):
 {{
   "Subjects": [
     {{
-      "Semester": "number as string, e.g. '3' — NEVER null if a semester header exists nearby",
+      "Semester": "{confirmed_semester if confirmed_semester else 'number as string, e.g. 3'}",
       "Subject Name": "exact name as in document",
       "Subject Code": "exact code as in document or null",
       "Credits": number or null,
@@ -98,7 +174,8 @@ OUTPUT FORMAT (strictly follow this structure):
 TEXT TO EXTRACT FROM:
 {text}
 
-REMINDER: Extract ALL subjects. Apply semester from section headers to every subject. Return valid JSON only."""
+REMINDER: Extract ALL subjects. {f'Set Semester={confirmed_semester} for EVERY subject.' if confirmed_semester else 'Apply correct semester from section headers.'} Return valid JSON only."""
+
 
 
 def _pyq_prompt(text: str, chunk_index: int, total_chunks: int) -> str:
@@ -179,9 +256,9 @@ TEXT:
 {text}"""
 
 
-def _get_prompt(doc_type: str, text: str, chunk_index: int = 0, total_chunks: int = 1) -> str:
+def _get_prompt(doc_type: str, text: str, chunk_index: int = 0, total_chunks: int = 1, confirmed_semester: int | None = None) -> str:
     if doc_type == "syllabus":
-        return _syllabus_prompt(text, chunk_index, total_chunks)
+        return _syllabus_prompt(text, chunk_index, total_chunks, confirmed_semester)
     elif doc_type == "pyq":
         return _pyq_prompt(text, chunk_index, total_chunks)
     elif doc_type == "academic_calendar":
@@ -281,12 +358,13 @@ def _parse_gemini_response(raw_text: str) -> dict:
         raise ValueError(f"Cannot parse Gemini response as JSON: {e}\nRaw: {raw_text[:200]}")
 
 
-async def _extract_chunk(chunk: str, doc_type: str, chunk_idx: int, total_chunks: int) -> dict:
+async def _extract_chunk(chunk: str, doc_type: str, chunk_idx: int, total_chunks: int, confirmed_semester: int | None = None) -> dict:
     """
     Extract structured data from one chunk using Gemini.
     Tries each model with exponential backoff.
+    confirmed_semester: if set, is injected into prompt to prevent wrong inference.
     """
-    prompt = _get_prompt(doc_type, chunk, chunk_idx, total_chunks)
+    prompt = _get_prompt(doc_type, chunk, chunk_idx, total_chunks, confirmed_semester)
     
     last_error = None
     for model_name in GEMINI_MODELS:
@@ -302,11 +380,15 @@ async def _extract_chunk(chunk: str, doc_type: str, chunk_idx: int, total_chunks
                 
                 # Log extraction counts
                 if "Subjects" in parsed:
-                    logger.info(f"[Gemini] Chunk {chunk_idx+1}: extracted {len(parsed['Subjects'])} subjects with model {model_name}")
+                    count = len(parsed["Subjects"])
+                    logger.info(f"[Gemini] Chunk {chunk_idx+1}: extracted {count} subjects with {model_name}")
+                    # Log per-subject semester for debugging
+                    for s in parsed["Subjects"]:
+                        logger.debug(f"[Gemini]   -> '{s.get('Subject Name','?')[:40]}' | Semester={s.get('Semester','?')}")
                 elif "QuestionPapers" in parsed:
-                    logger.info(f"[Gemini] Chunk {chunk_idx+1}: extracted {len(parsed['QuestionPapers'])} QPs with model {model_name}")
+                    logger.info(f"[Gemini] Chunk {chunk_idx+1}: extracted {len(parsed['QuestionPapers'])} QPs with {model_name}")
                 elif "Events" in parsed:
-                    logger.info(f"[Gemini] Chunk {chunk_idx+1}: extracted {len(parsed['Events'])} events with model {model_name}")
+                    logger.info(f"[Gemini] Chunk {chunk_idx+1}: extracted {len(parsed['Events'])} events with {model_name}")
                 
                 return parsed
                 
@@ -363,15 +445,25 @@ def _deduplicate(entities: list, key_fields: list) -> list:
 async def extract_structured_data_from_pdf_text(pdf_text: str, document_type) -> dict:
     """
     Main extraction function:
-      1. Chunks the PDF text by page boundaries
-      2. Sends each chunk to Gemini
-      3. Merges and deduplicates results
-      4. Returns combined structured JSON
+      1. Pre-detect semester from PDF headings (regex, before Gemini)
+      2. Chunk by page boundaries
+      3. Call Gemini per chunk with confirmed semester injected into prompt
+      4. Enforce confirmed semester on every extracted subject
+      5. Merge, deduplicate, validate and return
     """
     doc_type = document_type.value if hasattr(document_type, 'value') else str(document_type)
     
     logger.info(f"[Gemini] Starting extraction | type={doc_type} | text_length={len(pdf_text)}")
     t0 = time.perf_counter()
+    
+    # ── Step 1: Pre-detect semester from raw PDF text ─────────────────────────
+    confirmed_semester: int | None = None
+    if doc_type == "syllabus":
+        confirmed_semester = detect_semester_from_text(pdf_text)
+        if confirmed_semester:
+            logger.info(f"[Gemini] *** PRE-DETECTED SEMESTER = {confirmed_semester} *** (will be enforced on all subjects)")
+        else:
+            logger.warning("[Gemini] Could not pre-detect semester. Gemini will attempt to infer from section headers.")
     
     # Split into page-aware chunks
     chunks = _split_into_page_chunks(pdf_text)
@@ -384,7 +476,7 @@ async def extract_structured_data_from_pdf_text(pdf_text: str, document_type) ->
     
     for i, chunk in enumerate(chunks):
         logger.info(f"[Gemini] --- Chunk {i+1}/{len(chunks)} | {len(chunk)} chars ---")
-        result = await _extract_chunk(chunk, doc_type, i, len(chunks))
+        result = await _extract_chunk(chunk, doc_type, i, len(chunks), confirmed_semester)
         
         if "Subjects" in result:
             count = len(result["Subjects"])
@@ -403,22 +495,37 @@ async def extract_structured_data_from_pdf_text(pdf_text: str, document_type) ->
         else:
             logger.warning(f"[Gemini] Chunk {i+1}: empty result")
     
+    # ── Step 2: Enforce confirmed semester on every subject ───────────────────
+    if confirmed_semester and all_subjects:
+        overridden = 0
+        for subj in all_subjects:
+            raw_sem = str(subj.get("Semester", "")).strip()
+            if raw_sem != str(confirmed_semester):
+                logger.warning(
+                    f"[Gemini] Semester override: '{subj.get('Subject Name','?')[:40]}' "
+                    f"had Semester='{raw_sem}' → forced to {confirmed_semester}"
+                )
+                subj["Semester"] = str(confirmed_semester)
+                overridden += 1
+        if overridden:
+            logger.info(f"[Gemini] Enforced Semester {confirmed_semester} on {overridden} subject(s) that had wrong/null value")
+    
     # Deduplicate
     final = {}
     if all_subjects:
         deduped = _deduplicate(all_subjects, ["Subject Code", "Subject Name"])
         final["Subjects"] = deduped
-        logger.info(f"[Gemini] Subjects: {len(all_subjects)} raw → {len(deduped)} after dedup")
+        logger.info(f"[Gemini] Subjects: {len(all_subjects)} raw -> {len(deduped)} after dedup")
     
     if all_pyqs:
         deduped = _deduplicate(all_pyqs, ["Subject Code", "Subject Name", "Academic Year"])
         final["QuestionPapers"] = deduped
-        logger.info(f"[Gemini] QuestionPapers: {len(all_pyqs)} raw → {len(deduped)} after dedup")
+        logger.info(f"[Gemini] QuestionPapers: {len(all_pyqs)} raw -> {len(deduped)} after dedup")
     
     if all_events:
         deduped = _deduplicate(all_events, ["event_title", "event_date"])
         final["Events"] = deduped
-        logger.info(f"[Gemini] Events: {len(all_events)} raw → {len(deduped)} after dedup")
+        logger.info(f"[Gemini] Events: {len(all_events)} raw -> {len(deduped)} after dedup")
     
     if fallback_data:
         final.update(fallback_data)
