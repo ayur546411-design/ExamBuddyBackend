@@ -10,7 +10,7 @@ from app.models.document import Document, DocumentTypeEnum
 from app.schemas.document import Document as DocumentSchema
 from app.services.cloudinary_service import upload_file_to_cloudinary
 from app.services.gemini_service import extract_structured_data_from_pdf_text
-from app.services.pdf_service import extract_text_from_pdf
+from app.services.pdf_service import extract_text_from_pdf, extract_text_from_pdf_by_pages
 from app.api.v1.endpoints.users import get_current_user
 from app.models.user import User
 import logging
@@ -164,16 +164,34 @@ async def upload_document(
         file_size = cloudinary_res.get("bytes")
         file_format = cloudinary_res.get("format")
         
-        # 2. Extract Text from PDF
-        pdf_text = await extract_text_from_pdf(file_bytes)
+        # 2. Extract Text from PDF (page-by-page for full coverage)
+        logger.info("[Upload] Starting PDF text extraction...")
+        pages_dict = await extract_text_from_pdf_by_pages(file_bytes)
+        total_pages = len(pages_dict)
+        non_empty_pages = sum(1 for t in pages_dict.values() if t.strip())
+        logger.info(f"[Upload] PDF pages: {total_pages} total, {non_empty_pages} with text")
+        
+        # Build full text with page markers for Gemini
+        pdf_text = ""
+        for page_num, text in pages_dict.items():
+            if text.strip():
+                pdf_text += f"\n--- PAGE {page_num} ---\n{text}\n"
+            else:
+                pdf_text += f"\n--- PAGE {page_num} (empty) ---\n"
+        
+        if not pdf_text.strip():
+            raise HTTPException(status_code=422, detail="Could not extract any text from this PDF. It may be a scanned image-only PDF.")
         
         # 3. Get Structured JSON from Gemini
+        logger.info(f"[Upload] Sending {len(pdf_text)} chars to Gemini for {document_type} extraction...")
         structured_data = {}
         try:
             structured_data = await extract_structured_data_from_pdf_text(pdf_text, document_type)
+            if "error" in structured_data:
+                logger.error(f"[Upload] Gemini extraction error: {structured_data['error']}")
         except Exception as gemini_e:
-            print(f"Gemini extraction failed: {gemini_e}")
-            structured_data = {"error": "Failed to extract metadata with Gemini"}
+            logger.error(f"[Upload] Gemini extraction exception: {gemini_e}")
+            structured_data = {"error": f"Gemini extraction failed: {str(gemini_e)}"}
         
         # 4. Process all entities in structured_json and Save to Database
         entities = []
@@ -338,16 +356,32 @@ async def upload_document(
                 skipped_count += 1
                 logger.error(f"[Upload API] Skipped entity due to error: {str(e)}\nEntity: {entity}")
                 
-        logger.info(f"[Upload API] Upload complete. Inserted: {inserted_count}, Skipped: {skipped_count}")
+        logger.info(f"[Upload] Upload complete. Pages: {total_pages} | Inserted: {inserted_count} | Skipped: {skipped_count}")
+        
+        # Build extraction validation report
+        extracted_count = len(entities)
+        validation_report = {
+            "pdf_pages_total": total_pages,
+            "pdf_pages_with_text": non_empty_pages,
+            "pdf_pages_empty": total_pages - non_empty_pages,
+            "gemini_entities_extracted": extracted_count,
+            "db_documents_inserted": inserted_count,
+            "db_documents_skipped": skipped_count,
+            "extraction_success": inserted_count > 0,
+            "coverage_pct": round((inserted_count / max(extracted_count, 1)) * 100, 1)
+        }
         
         return {
             "message": "Document processed and saved to database successfully",
+            "validation_report": validation_report,
             "inserted_entities": inserted_count,
             "skipped_entities": skipped_count,
             "cloudinary_url": cloudinary_url,
             "structured_json": structured_data
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()

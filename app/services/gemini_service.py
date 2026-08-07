@@ -1,217 +1,444 @@
+"""
+gemini_service.py — AI extraction from PDF text
+=================================================
+Pipeline:
+  1. Receive full PDF text (page-marked)
+  2. Split into page-aware chunks (not character-aware)
+  3. For each chunk: call Gemini with strict extraction prompt
+  4. Merge + deduplicate results
+  5. Validate completeness and return
+
+Key fixes:
+  - Valid Gemini model names
+  - Strict prompt that forbids skipping or summarizing
+  - Page-boundary chunking (no subject split at mid-subject)
+  - Retry with exponential backoff
+  - Full logging of every extraction step
+"""
 import google.generativeai as genai
 from app.core.config import settings
 import logging
 import json
 import re
+import asyncio
+import time
 
 logger = logging.getLogger(__name__)
 
 genai.configure(api_key=settings.GEMINI_API_KEY)
 
-def _get_prompt_for_type(doc_type: str, text: str) -> str:
-    base_instructions = (
-        "Analyze the ENTIRE provided PDF text. Do not stop after the first detected entity. "
-        "Extract every single subject, question paper, or event found in the document. "
-        "Strictly output ONLY valid JSON format. Do not include markdown code blocks or any other text before or after the JSON.\n\n"
-    )
-    
-    if doc_type == "syllabus":
-        return base_instructions + f"""
-Format the syllabus into this JSON structure containing an array of ALL subjects found:
+# ── Valid Gemini model names (in priority order) ─────────────────────────────
+GEMINI_MODELS = [
+    "gemini-2.0-flash",           # Fast, large context, best for extraction
+    "gemini-1.5-flash",           # Stable fallback
+    "gemini-1.5-pro",             # Higher quality, slower
+    "gemini-1.5-flash-latest",    # Latest flash variant
+]
+
+# ── Chunking config ──────────────────────────────────────────────────────────
+PAGES_PER_CHUNK = 8       # Process 8 pages per Gemini call
+MAX_CHARS_PER_CHUNK = 30000  # Hard cap per chunk
+
+
+# ── Prompts ──────────────────────────────────────────────────────────────────
+
+def _syllabus_prompt(text: str, chunk_index: int, total_chunks: int) -> str:
+    return f"""You are a university syllabus data extraction engine.
+
+CRITICAL RULES — YOU MUST FOLLOW EVERY RULE WITHOUT EXCEPTION:
+1. Extract EVERY subject found in this text. Do NOT skip any subject.
+2. Do NOT summarize. Extract the EXACT content as written.
+3. Do NOT stop early. Process EVERY line of text provided.
+4. If a subject has multiple units, extract ALL units.
+5. If a subject has topics, extract ALL topics for EACH unit.
+6. If a subject has practicals, list ALL practicals.
+7. If a subject has reference books, list ALL books.
+8. If a subject has learning outcomes/objectives, list ALL of them.
+9. Preserve exact subject names, codes, and numbering.
+10. If the semester is not explicitly stated for a subject, make your best inference from context.
+11. This is chunk {chunk_index + 1} of {total_chunks} — extract all subjects visible in THIS chunk.
+12. Output ONLY valid JSON. No markdown. No explanation. No preamble.
+
+OUTPUT FORMAT (strictly follow this structure):
 {{
   "Subjects": [
     {{
-      "Semester": "string or null",
-      "Subject Name": "string or null",
-      "Subject Code": "string or null",
-      "Credits": "number or null",
+      "Semester": "number as string, e.g. '3' or null if unknown",
+      "Subject Name": "exact name as in document",
+      "Subject Code": "exact code as in document or null",
+      "Credits": number or null,
+      "Subject Type": "theory/lab/practical/elective or null",
       "Units": [
         {{
-          "Unit Name": "string",
-          "Topics": ["string"]
+          "Unit Name": "exact unit name",
+          "Topics": ["exact topic 1", "exact topic 2", "..."]
         }}
       ],
-      "Learning Outcomes": ["string"],
-      "Practicals": ["string"],
-      "Reference Books": ["string"],
-      "Keywords": ["string"]
+      "Learning Outcomes": ["exact outcome 1", "exact outcome 2"],
+      "Practicals": ["exact practical 1", "exact practical 2"],
+      "Reference Books": ["Author, Title, Publisher", "..."],
+      "Keywords": ["keyword1", "keyword2"]
     }}
   ]
 }}
 
-Extracted Text:
+TEXT TO EXTRACT FROM:
 {text}
-"""
-    elif doc_type == "pyq":
-        return base_instructions + f"""
-Format the Previous Year Question Papers into this JSON structure containing an array of ALL question papers found:
+
+REMINDER: Extract ALL subjects. Every subject. No skipping. Return valid JSON only."""
+
+
+def _pyq_prompt(text: str, chunk_index: int, total_chunks: int) -> str:
+    return f"""You are a university question paper extraction engine.
+
+CRITICAL RULES:
+1. Extract EVERY question found in this text. Do NOT skip any question.
+2. Extract EVERY question paper header (subject, year, marks, duration).
+3. Do NOT summarize questions — copy them EXACTLY as written.
+4. Preserve question numbers, marks, and units as shown.
+5. This is chunk {chunk_index + 1} of {total_chunks}.
+6. Output ONLY valid JSON. No markdown. No explanation.
+
+OUTPUT FORMAT:
 {{
   "QuestionPapers": [
     {{
-      "Subject Name": "string or null",
-      "Subject Code": "string or null",
-      "Semester": "string or null",
-      "Academic Year": "string or null",
-      "Exam Type": "string or null",
-      "Total Marks": "number or null",
-      "Duration": "string or null",
+      "Subject Name": "exact name",
+      "Subject Code": "exact code or null",
+      "Semester": "number as string or null",
+      "Academic Year": "e.g. 2023-24 or null",
+      "Exam Type": "Mid/End/Annual or null",
+      "Total Marks": number or null,
+      "Duration": "e.g. 3 Hours or null",
       "Questions": [
         {{
-          "Question Number": "string",
-          "Question Text": "string",
-          "Marks": "number or null",
-          "Unit": "string or null"
+          "Question Number": "e.g. Q1(a)",
+          "Question Text": "exact question text",
+          "Marks": number or null,
+          "Unit": "unit name or null"
         }}
       ],
-      "Unit-wise Question Mapping": {{"Unit 1": ["Question 1"]}},
-      "Frequently Asked Questions": ["string"],
-      "Important Topics": ["string"],
-      "Keywords": ["string"]
+      "Keywords": ["keyword1"]
     }}
   ]
 }}
 
-Extracted Text:
-{text}
-"""
-    elif doc_type == "academic_calendar":
-        return base_instructions + f"""
-Format the Academic Calendar into this JSON structure containing an array of ALL events found:
+TEXT TO EXTRACT FROM:
+{text}"""
+
+
+def _calendar_prompt(text: str, chunk_index: int, total_chunks: int) -> str:
+    return f"""You are an academic calendar extraction engine.
+
+CRITICAL RULES:
+1. Extract EVERY event and date found. Do NOT skip any.
+2. This is chunk {chunk_index + 1} of {total_chunks}.
+3. Output ONLY valid JSON.
+
+OUTPUT FORMAT:
 {{
   "Events": [
     {{
-      "event_title": "string",
-      "event_date": "YYYY-MM-DD",
-      "description": "string or null",
-      "event_type": "string (e.g. standard, restricted, academic)"
+      "event_title": "exact event name",
+      "event_date": "YYYY-MM-DD or approximate date string",
+      "description": "any description or null",
+      "event_type": "holiday/exam/academic/other"
     }}
   ]
 }}
 
-Extracted Text:
-{text}
-"""
-    else:
-        # Generic fallback
-        return base_instructions + f"""
-Extract key metadata and summarize the document in this JSON structure:
+TEXT TO EXTRACT FROM:
+{text}"""
+
+
+def _generic_prompt(text: str) -> str:
+    return f"""Extract key information from this document as JSON.
+
+OUTPUT FORMAT:
 {{
-  "Title": "string",
-  "Summary": "string",
-  "Key Points": ["string"],
-  "Keywords": ["string"]
+  "Title": "document title",
+  "Summary": "brief summary",
+  "Key Points": ["point 1", "point 2"],
+  "Keywords": ["keyword1"]
 }}
 
-Extracted Text:
-{text}
-"""
+TEXT:
+{text}"""
 
-async def extract_structured_data_from_pdf_text(pdf_text: str, document_type: str) -> dict:
+
+def _get_prompt(doc_type: str, text: str, chunk_index: int = 0, total_chunks: int = 1) -> str:
+    if doc_type == "syllabus":
+        return _syllabus_prompt(text, chunk_index, total_chunks)
+    elif doc_type == "pyq":
+        return _pyq_prompt(text, chunk_index, total_chunks)
+    elif doc_type == "academic_calendar":
+        return _calendar_prompt(text, chunk_index, total_chunks)
+    else:
+        return _generic_prompt(text)
+
+
+# ── Chunking ─────────────────────────────────────────────────────────────────
+
+def _split_into_page_chunks(pdf_text: str) -> list[str]:
     """
-    Sends extracted PDF text to Gemini to generate structured JSON data based on document type.
+    Split PDF text on PAGE markers inserted by pdf_service.
+    Each chunk = up to PAGES_PER_CHUNK pages.
+    Falls back to character splitting if no markers found.
     """
-    CHUNK_SIZE = 25000
-    OVERLAP = 2000
+    # Try page-boundary splitting first
+    page_pattern = re.compile(r'--- PAGE \d+ ---')
+    pages = page_pattern.split(pdf_text)
+    markers = page_pattern.findall(pdf_text)
     
+    if len(pages) > 2:  # Real page markers found
+        # Reattach markers to their pages
+        labeled_pages = []
+        for i, content in enumerate(pages[1:], 0):  # skip first empty split
+            marker = markers[i] if i < len(markers) else f"--- PAGE {i+1} ---"
+            labeled_pages.append(f"{marker}\n{content}")
+        
+        # Group into chunks of PAGES_PER_CHUNK
+        chunks = []
+        for i in range(0, len(labeled_pages), PAGES_PER_CHUNK):
+            chunk = "".join(labeled_pages[i:i + PAGES_PER_CHUNK])
+            if len(chunk) > MAX_CHARS_PER_CHUNK:
+                # Split oversized chunk further
+                for j in range(0, len(chunk), MAX_CHARS_PER_CHUNK):
+                    sub = chunk[j:j + MAX_CHARS_PER_CHUNK]
+                    if sub.strip():
+                        chunks.append(sub)
+            elif chunk.strip():
+                chunks.append(chunk)
+        
+        logger.info(f"[Gemini] Page-based chunking: {len(labeled_pages)} pages → {len(chunks)} chunks")
+        return chunks
+    
+    # Fallback: character-based chunks with overlap
+    logger.warning("[Gemini] No page markers found. Falling back to character chunking.")
     chunks = []
+    CHUNK = 25000
+    OVERLAP = 1000
     start = 0
     while start < len(pdf_text):
-        end = start + CHUNK_SIZE
-        chunks.append(pdf_text[start:end])
-        start += CHUNK_SIZE - OVERLAP
-        
-    all_subjects = []
-    all_events = []
-    all_pyqs = []
+        chunk = pdf_text[start:start + CHUNK]
+        if chunk.strip():
+            chunks.append(chunk)
+        start += CHUNK - OVERLAP
+    logger.info(f"[Gemini] Character chunking: {len(chunks)} chunks")
+    return chunks
+
+
+# ── Core extraction ───────────────────────────────────────────────────────────
+
+def _call_gemini_sync(prompt: str, model_name: str) -> str:
+    """Synchronous Gemini call (runs in thread pool for async compat)."""
+    model = genai.GenerativeModel(model_name)
+    response = model.generate_content(
+        prompt,
+        generation_config=genai.GenerationConfig(
+            temperature=0.1,           # Low temp = more deterministic, less hallucination
+            max_output_tokens=8192,    # Max output per call
+        )
+    )
+    return response.text.strip()
+
+
+def _parse_gemini_response(raw_text: str) -> dict:
+    """
+    Parse Gemini response to dict.
+    Handles: bare JSON, ```json...```, partial JSON, trailing commas.
+    """
+    # Remove markdown code blocks
+    cleaned = re.sub(r'^```(?:json)?\s*', '', raw_text, flags=re.MULTILINE)
+    cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE).strip()
     
-    models_to_try = [
-        'gemini-flash-latest',
-        'gemini-pro-latest',
-        'gemini-3.5-flash',
-        'gemini-2.0-flash'
-    ]
+    # Remove trailing commas before } or ] (common Gemini mistake)
+    cleaned = re.sub(r',\s*([}\]])', r'\1', cleaned)
+    
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        # Try to find JSON object within the text
+        json_match = re.search(r'\{[\s\S]*\}', cleaned)
+        if json_match:
+            try:
+                return json.loads(json_match.group())
+            except Exception:
+                pass
+        raise ValueError(f"Cannot parse Gemini response as JSON: {e}\nRaw: {raw_text[:200]}")
+
+
+async def _extract_chunk(chunk: str, doc_type: str, chunk_idx: int, total_chunks: int) -> dict:
+    """
+    Extract structured data from one chunk using Gemini.
+    Tries each model with exponential backoff.
+    """
+    prompt = _get_prompt(doc_type, chunk, chunk_idx, total_chunks)
+    
+    last_error = None
+    for model_name in GEMINI_MODELS:
+        for attempt in range(3):  # 3 retries per model
+            try:
+                logger.info(f"[Gemini] Chunk {chunk_idx+1}/{total_chunks} | Model: {model_name} | Attempt {attempt+1}")
+                
+                # Run sync Gemini call in thread pool
+                loop = asyncio.get_event_loop()
+                raw = await loop.run_in_executor(None, _call_gemini_sync, prompt, model_name)
+                
+                parsed = _parse_gemini_response(raw)
+                
+                # Log extraction counts
+                if "Subjects" in parsed:
+                    logger.info(f"[Gemini] Chunk {chunk_idx+1}: extracted {len(parsed['Subjects'])} subjects with model {model_name}")
+                elif "QuestionPapers" in parsed:
+                    logger.info(f"[Gemini] Chunk {chunk_idx+1}: extracted {len(parsed['QuestionPapers'])} QPs with model {model_name}")
+                elif "Events" in parsed:
+                    logger.info(f"[Gemini] Chunk {chunk_idx+1}: extracted {len(parsed['Events'])} events with model {model_name}")
+                
+                return parsed
+                
+            except Exception as e:
+                last_error = e
+                err_str = str(e)
+                
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    wait = 30 * (attempt + 1)
+                    logger.warning(f"[Gemini] Rate limited on {model_name}. Waiting {wait}s...")
+                    await asyncio.sleep(wait)
+                elif "API_KEY" in err_str or "403" in err_str:
+                    logger.error(f"[Gemini] Auth error on {model_name}: {e}")
+                    break  # Don't retry auth errors
+                else:
+                    wait = 5 * (attempt + 1)
+                    logger.warning(f"[Gemini] {model_name} attempt {attempt+1} failed: {e}. Waiting {wait}s...")
+                    await asyncio.sleep(wait)
+        
+        logger.warning(f"[Gemini] All attempts failed for model {model_name}. Trying next model...")
+    
+    logger.error(f"[Gemini] Chunk {chunk_idx+1}: ALL models failed. Last error: {last_error}")
+    return {}
+
+
+# ── Deduplication ─────────────────────────────────────────────────────────────
+
+def _deduplicate(entities: list, key_fields: list) -> list:
+    """
+    Remove duplicates based on key fields.
+    Keeps the entry with the most data (most non-null fields).
+    """
+    groups = {}
+    for ent in entities:
+        key = "_".join(str(ent.get(k, "") or "").strip().lower()[:30] for k in key_fields)
+        key = re.sub(r'\s+', ' ', key).strip()
+        if not key.replace("_", "").strip():
+            continue
+        if key not in groups:
+            groups[key] = ent
+        else:
+            # Keep the richer entry
+            existing = groups[key]
+            existing_fields = sum(1 for v in existing.values() if v)
+            new_fields = sum(1 for v in ent.values() if v)
+            if new_fields > existing_fields:
+                groups[key] = ent
+    
+    return list(groups.values())
+
+
+# ── Main public function ──────────────────────────────────────────────────────
+
+async def extract_structured_data_from_pdf_text(pdf_text: str, document_type) -> dict:
+    """
+    Main extraction function:
+      1. Chunks the PDF text by page boundaries
+      2. Sends each chunk to Gemini
+      3. Merges and deduplicates results
+      4. Returns combined structured JSON
+    """
+    doc_type = document_type.value if hasattr(document_type, 'value') else str(document_type)
+    
+    logger.info(f"[Gemini] Starting extraction | type={doc_type} | text_length={len(pdf_text)}")
+    t0 = time.perf_counter()
+    
+    # Split into page-aware chunks
+    chunks = _split_into_page_chunks(pdf_text)
+    logger.info(f"[Gemini] Processing {len(chunks)} chunk(s)")
+    
+    all_subjects = []
+    all_pyqs = []
+    all_events = []
+    fallback_data = {}
     
     for i, chunk in enumerate(chunks):
-        logger.info(f"Processing chunk {i+1}/{len(chunks)} of PDF text ({len(chunk)} chars)...")
-        prompt = _get_prompt_for_type(document_type.value if hasattr(document_type, 'value') else document_type, chunk)
+        logger.info(f"[Gemini] --- Chunk {i+1}/{len(chunks)} | {len(chunk)} chars ---")
+        result = await _extract_chunk(chunk, doc_type, i, len(chunks))
         
-        chunk_success = False
-        import time
-        import asyncio
-        for retry in range(3):
-            for model_name in models_to_try:
-                try:
-                    model = genai.GenerativeModel(model_name)
-                    response = model.generate_content(prompt)
-                    raw_text = response.text.strip()
-                    
-                    cleaned_text = re.sub(r'^```json\s*', '', raw_text)
-                    cleaned_text = re.sub(r'\s*```$', '', cleaned_text).strip()
-                    
-                    parsed = json.loads(cleaned_text)
-                    
-                    if "Subjects" in parsed:
-                        all_subjects.extend(parsed["Subjects"])
-                    elif "QuestionPapers" in parsed:
-                        all_pyqs.extend(parsed["QuestionPapers"])
-                    elif "Events" in parsed:
-                        all_events.extend(parsed["Events"])
-                    else:
-                        pass
-                        
-                    chunk_success = True
-                    break # Break out of models loop
-                except Exception as e:
-                    if "429" in str(e):
-                        logger.warning(f"Rate limited on {model_name}. Trying next model...")
-                    else:
-                        logger.warning(f"Gemini API failed with model {model_name} on chunk {i+1}: {str(e)}")
-            
-            if chunk_success:
-                break # Break out of retries loop
-                
-            logger.warning(f"All models failed for chunk {i+1} on attempt {retry+1}. Sleeping for 30s before retry...")
-            await asyncio.sleep(30) 
-            
-        if not chunk_success:
-            logger.error(f"Failed to parse chunk {i+1} using all available models.")
-            
-    # Deduplicate entities
-    def deduplicate(entities, key_fields):
-        unique = []
-        seen = set()
-        for ent in entities:
-            key = "_".join(str(ent.get(k, "")).strip().lower() for k in key_fields)
-            if key not in seen and key.replace("_", "") != "":
-                seen.add(key)
-                unique.append(ent)
-        return unique
-
-    final_dict = {}
+        if "Subjects" in result:
+            count = len(result["Subjects"])
+            all_subjects.extend(result["Subjects"])
+            logger.info(f"[Gemini] Chunk {i+1}: +{count} subjects (running total: {len(all_subjects)})")
+        elif "QuestionPapers" in result:
+            count = len(result["QuestionPapers"])
+            all_pyqs.extend(result["QuestionPapers"])
+            logger.info(f"[Gemini] Chunk {i+1}: +{count} question papers (running total: {len(all_pyqs)})")
+        elif "Events" in result:
+            count = len(result["Events"])
+            all_events.extend(result["Events"])
+            logger.info(f"[Gemini] Chunk {i+1}: +{count} events (running total: {len(all_events)})")
+        elif result:
+            fallback_data.update(result)
+        else:
+            logger.warning(f"[Gemini] Chunk {i+1}: empty result")
+    
+    # Deduplicate
+    final = {}
     if all_subjects:
-        final_dict["Subjects"] = deduplicate(all_subjects, ["Subject Code", "Subject Name"])
+        deduped = _deduplicate(all_subjects, ["Subject Code", "Subject Name"])
+        final["Subjects"] = deduped
+        logger.info(f"[Gemini] Subjects: {len(all_subjects)} raw → {len(deduped)} after dedup")
+    
     if all_pyqs:
-        final_dict["QuestionPapers"] = deduplicate(all_pyqs, ["Subject Code", "Subject Name"])
+        deduped = _deduplicate(all_pyqs, ["Subject Code", "Subject Name", "Academic Year"])
+        final["QuestionPapers"] = deduped
+        logger.info(f"[Gemini] QuestionPapers: {len(all_pyqs)} raw → {len(deduped)} after dedup")
+    
     if all_events:
-        final_dict["Events"] = deduplicate(all_events, ["event_title", "event_date"])
-        
-    return final_dict if final_dict else {"error": "Failed to parse structured JSON from Gemini using all available models."}
+        deduped = _deduplicate(all_events, ["event_title", "event_date"])
+        final["Events"] = deduped
+        logger.info(f"[Gemini] Events: {len(all_events)} raw → {len(deduped)} after dedup")
+    
+    if fallback_data:
+        final.update(fallback_data)
+    
+    elapsed = round(time.perf_counter() - t0, 2)
+    
+    if not final:
+        logger.error(f"[Gemini] EXTRACTION FAILED: no data returned after {len(chunks)} chunk(s) in {elapsed}s")
+        return {"error": "Gemini extraction returned no structured data. Check model availability and API key."}
+    
+    total_entities = len(final.get("Subjects", [])) + len(final.get("QuestionPapers", [])) + len(final.get("Events", []))
+    logger.info(f"[Gemini] Extraction complete: {total_entities} total entities in {elapsed}s")
+    return final
+
+
+# ── AI Answer generation ──────────────────────────────────────────────────────
 
 async def generate_answer(question_text: str) -> str:
     """Generates an answer for a PYQ question using Gemini."""
-    try:
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
-        prompt = f"""
-You are an expert academic tutor for university students. 
-Please provide a comprehensive, well-structured, and accurate answer to the following exam question. 
+    prompt = f"""You are an expert academic tutor for university students.
+Provide a comprehensive, well-structured, and accurate answer to the following exam question.
 If the question asks for code, provide clean code with explanations.
-If the question is theoretical, explain it with points or paragraphs.
+If the question is theoretical, explain with clear points or paragraphs.
 Format your answer using markdown for readability.
 
 Question: {question_text}
 """
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        logger.error(f"Error generating AI answer: {e}")
-        return "I'm sorry, I couldn't generate an answer at this time due to an error."
+    for model_name in GEMINI_MODELS:
+        try:
+            loop = asyncio.get_event_loop()
+            raw = await loop.run_in_executor(None, _call_gemini_sync, prompt, model_name)
+            return raw
+        except Exception as e:
+            logger.warning(f"[Gemini:AI] {model_name} failed for answer generation: {e}")
+    
+    return "I'm sorry, I couldn't generate an answer at this time. Please try again."
