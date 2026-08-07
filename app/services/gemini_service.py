@@ -1,21 +1,17 @@
 """
 gemini_service.py — AI extraction from PDF text
 =================================================
+Uses the new google.genai SDK (google-generativeai is deprecated).
+
 Pipeline:
   1. Receive full PDF text (page-marked)
-  2. Split into page-aware chunks (not character-aware)
+  2. Split into page-aware chunks
   3. For each chunk: call Gemini with strict extraction prompt
   4. Merge + deduplicate results
   5. Validate completeness and return
-
-Key fixes:
-  - Valid Gemini model names
-  - Strict prompt that forbids skipping or summarizing
-  - Page-boundary chunking (no subject split at mid-subject)
-  - Retry with exponential backoff
-  - Full logging of every extraction step
 """
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from app.core.config import settings
 import logging
 import json
@@ -25,14 +21,20 @@ import time
 
 logger = logging.getLogger(__name__)
 
-genai.configure(api_key=settings.GEMINI_API_KEY)
+# Initialize the new SDK client
+_client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
-# ── Valid Gemini model names (in priority order) ─────────────────────────────
+# ── Confirmed-working model names (tested against this API key) ──────────────
+# Priority: currently working models first, quota-limited fallbacks at end
 GEMINI_MODELS = [
-    "gemini-2.0-flash",           # Fast, large context, best for extraction
-    "gemini-1.5-flash",           # Stable fallback
-    "gemini-1.5-pro",             # Higher quality, slower
-    "gemini-1.5-flash-latest",    # Latest flash variant
+    "gemini-flash-lite-latest",   # ✅ WORKING — confirmed
+    "gemini-3.5-flash-lite",      # ✅ WORKING — confirmed
+    "gemini-3-flash-preview",     # ✅ WORKING — confirmed
+    "gemini-3.1-flash-lite",      # ✅ WORKING — confirmed
+    "gemini-3.1-flash-lite-preview",  # ✅ WORKING — confirmed
+    "gemini-2.0-flash",           # QUOTA (free tier daily limit, resets daily)
+    "gemini-2.0-flash-lite",      # QUOTA (free tier daily limit, resets daily)
+    "gemini-pro-latest",          # QUOTA fallback
 ]
 
 # ── Chunking config ──────────────────────────────────────────────────────────
@@ -231,13 +233,13 @@ def _split_into_page_chunks(pdf_text: str) -> list[str]:
 # ── Core extraction ───────────────────────────────────────────────────────────
 
 def _call_gemini_sync(prompt: str, model_name: str) -> str:
-    """Synchronous Gemini call (runs in thread pool for async compat)."""
-    model = genai.GenerativeModel(model_name)
-    response = model.generate_content(
-        prompt,
-        generation_config=genai.GenerationConfig(
-            temperature=0.1,           # Low temp = more deterministic, less hallucination
-            max_output_tokens=8192,    # Max output per call
+    """Synchronous Gemini call using the new google.genai SDK."""
+    response = _client.models.generate_content(
+        model=model_name,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            temperature=0.1,
+            max_output_tokens=8192,
         )
     )
     return response.text.strip()
