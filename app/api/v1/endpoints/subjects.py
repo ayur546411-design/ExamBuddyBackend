@@ -27,10 +27,11 @@ async def get_subjects(
     Retrieve all active subjects for the current user's department.
     Optionally filter by semester_id.
     """
-    logger.info(f"[Subjects API] Fetching subjects for user {current_user.full_name}, dept: {current_user.department_id}, semester: {semester_id}")
+    logger.info("[Subjects] ---- REQUEST START ----")
+    logger.info(f"[Subjects] user={current_user.full_name} dept_id={current_user.department_id} semester_id={semester_id}")
     
     if not current_user.department_id:
-        logger.warning(f"[Subjects API] User {current_user.full_name} has no department_id")
+        logger.warning(f"[Subjects] REJECTED: user {current_user.full_name} has no department_id")
         raise HTTPException(status_code=400, detail="User is not assigned to a department")
         
     query = select(Subject).where(
@@ -40,14 +41,15 @@ async def get_subjects(
     
     if semester_id:
         query = query.where(Subject.semester_id == semester_id)
+        logger.info(f"[Subjects] filter: semester_id = {semester_id}")
         
     result = await db.execute(query)
     subjects = result.scalars().all()
     
-    logger.info(f"[Subjects API] Found {len(subjects)} subjects")
+    logger.info(f"[Subjects] RESULT: {len(subjects)} subjects for dept={current_user.department_id}")
     if not subjects:
-        logger.warning(f"[Subjects API] No subjects found for department {current_user.department_id}, semester {semester_id}")
-        
+        logger.warning(f"[Subjects] EMPTY RESULT - dept_id={current_user.department_id} semester_id={semester_id}. No subjects uploaded for this dept yet.")
+    logger.info("[Subjects] ---- REQUEST END ----")
     return subjects
 
 @router.get("/{subject_id}/questions", response_model=List[QuestionSchema])

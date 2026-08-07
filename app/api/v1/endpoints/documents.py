@@ -27,19 +27,28 @@ async def get_documents(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Retrieve documents relevant to the current user.
-    Returns only essential fields (no extracted_text) for fast list loading.
-    structured_json is included so viewers (e.g. SyllabusViewerScreen) can render content.
+    Retrieve documents for the current user.
+    - When subject_id is provided: returns all active docs for that subject (no dept filter).
+    - When subject_id is absent: scopes to the user's department.
+    structured_json is always included so SyllabusViewerScreen can render units/topics.
     """
     import time
     t0 = time.perf_counter()
-    logger.info(f"[Documents API] Fetching documents dept={current_user.department_id} type={document_type} subject={subject_id}")
+
+    # ── Detailed request logging ─────────────────────────────────────
+    logger.info("[Documents] ---- REQUEST START ----")
+    logger.info(f"[Documents] user_id       = {current_user.id}")
+    logger.info(f"[Documents] user_name     = {current_user.full_name}")
+    logger.info(f"[Documents] dept_id       = {current_user.department_id}")
+    logger.info(f"[Documents] school_id     = {current_user.school_id}")
+    logger.info(f"[Documents] param subject_id     = {subject_id}")
+    logger.info(f"[Documents] param document_type  = {document_type}")
 
     if not current_user.department_id:
+        logger.error("[Documents] REJECTED: user has no department_id")
         raise HTTPException(status_code=400, detail="User is not assigned to a department")
 
-    # Only fetch lightweight columns — skip extracted_text but KEEP structured_json
-    # (SyllabusViewerScreen needs structured_json to render units/topics)
+    # Build query — always include structured_json (needed by SyllabusViewerScreen)
     query = (
         select(Document)
         .options(load_only(
@@ -60,28 +69,32 @@ async def get_documents(
             Document.subject_id,
             Document.uploaded_by_admin,
             Document.created_at,
-            Document.structured_json,  # Needed by SyllabusViewerScreen for unit/topic rendering
+            Document.structured_json,
         ))
         .where(Document.status == "active")
     )
 
     if subject_id:
-        # When filtering by subject_id, trust the subject scope — don't restrict by
-        # department_id. This fixes syllabus docs uploaded with a different dept_id
-        # still appearing correctly for users of that subject.
+        # subject_id is the tightest scope — no dept filter needed
         query = query.where(Document.subject_id == subject_id)
+        logger.info(f"[Documents] filter: subject_id = {subject_id}")
     else:
-        # Without a specific subject, scope to the user's department for safety
+        # Scope to user's department
         query = query.where(Document.department_id == current_user.department_id)
+        logger.info(f"[Documents] filter: department_id = {current_user.department_id}")
 
     if document_type:
         query = query.where(Document.document_type == document_type)
+        logger.info(f"[Documents] filter: document_type = {document_type}")
 
     result = await db.execute(query.order_by(Document.created_at.desc()))
     documents = result.scalars().all()
 
     elapsed = round((time.perf_counter() - t0) * 1000, 2)
-    logger.info(f"[Documents API] Returned {len(documents)} docs in {elapsed}ms")
+    logger.info(f"[Documents] RESULT: {len(documents)} document(s) returned in {elapsed}ms")
+    if len(documents) == 0:
+        logger.warning(f"[Documents] EMPTY RESULT — subject_id={subject_id} dept={current_user.department_id} type={document_type}")
+    logger.info("[Documents] ---- REQUEST END ----")
     return documents
 
 @router.post("/upload")
