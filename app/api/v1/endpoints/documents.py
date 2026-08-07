@@ -449,10 +449,50 @@ async def upload_document(
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 
 
+@router.get("/admin/db-status")
+async def db_status(db: AsyncSession = Depends(get_db)):
+    """Debug: show what database the server is connected to and what it contains."""
+    from app.models.semester import Semester
+    from app.models.subject import Subject
+    from app.models.department import Department
+    from app.models.school import School
+    from app.core.config import settings
+
+    result = {
+        "db_url_prefix": settings.DATABASE_URL[:60] + "...",
+        "counts": {}
+    }
+
+    try:
+        result["counts"]["schools"] = len((await db.execute(select(School))).scalars().all())
+        result["counts"]["departments"] = len((await db.execute(select(Department))).scalars().all())
+        result["counts"]["semesters"] = len((await db.execute(select(Semester))).scalars().all())
+        result["counts"]["subjects"] = len((await db.execute(select(Subject))).scalars().all())
+        result["counts"]["documents"] = len((await db.execute(select(Document))).scalars().all())
+
+        sems = (await db.execute(select(Semester).order_by(Semester.semester_number))).scalars().all()
+        result["semesters"] = []
+        for sem in sems:
+            subjects = (await db.execute(
+                select(Subject).where(Subject.semester_id == sem.id)
+            )).scalars().all()
+            result["semesters"].append({
+                "number": sem.semester_number,
+                "id": sem.id[:8],
+                "subjects": [{"name": s.name, "code": s.code} for s in subjects]
+            })
+
+    except Exception as e:
+        result["error"] = str(e)
+
+    return result
+
+
 @router.post("/admin/repair-semesters")
 async def repair_semester_assignments(
     db: AsyncSession = Depends(get_db)
 ):
+
     """
     Admin endpoint: Audit and repair subjects assigned to wrong semester.
 
