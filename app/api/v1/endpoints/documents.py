@@ -92,7 +92,7 @@ async def upload_document(
     subject_id: Optional[str] = Form(None),
     semester_id: Optional[str] = Form(None),
     academic_year: Optional[str] = Form(None),
-    document_type: DocumentTypeEnum = Form(DocumentTypeEnum.academic_calendar),
+    document_type: DocumentTypeEnum = Form(DocumentTypeEnum.syllabus),  # default = syllabus (most common upload)
     db: AsyncSession = Depends(get_db)
 ):
     """
