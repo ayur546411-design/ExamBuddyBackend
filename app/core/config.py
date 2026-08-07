@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     VERSION: str = "1.1.0"
     API_V1_STR: str = "/api/v1"
 
+    # Deployed server URL — used by Swagger UI so docs work on production
+    # Set this to your Render / Railway / etc. URL in .env, e.g.:
+    # BACKEND_URL=https://your-app.onrender.com
+    BACKEND_URL: str = ""  # empty = use relative URL (fine for local dev)
+
     # Supabase / DB
     SUPABASE_URL: str = ""
     SUPABASE_SERVICE_ROLE_KEY: str = ""

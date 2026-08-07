@@ -11,10 +11,21 @@ logger = logging.getLogger(__name__)
 APP_START_TIME = time.time()
 
 def create_app() -> FastAPI:
+    # Build the OpenAPI servers list so Swagger UI calls the correct host.
+    # When BACKEND_URL is set (production), Swagger will send requests there.
+    # When it is empty (local dev), we use relative paths (default behaviour).
+    servers = None
+    if settings.BACKEND_URL:
+        servers = [
+            {"url": settings.BACKEND_URL, "description": "Production"},
+            {"url": "http://localhost:8000", "description": "Local dev"},
+        ]
+
     app = FastAPI(
         title=settings.PROJECT_NAME,
         version=settings.VERSION,
-        openapi_url=f"{settings.API_V1_STR}/openapi.json"
+        openapi_url=f"{settings.API_V1_STR}/openapi.json",
+        servers=servers,
     )
 
     # Set all CORS enabled origins
