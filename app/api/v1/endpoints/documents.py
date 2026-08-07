@@ -243,10 +243,17 @@ async def upload_document(
                 
                 if subject_name and entity_semester_id:
                     # Find or Create Subject
+                    # Use bidirectional ilike: DB name contains Gemini name OR Gemini name contains DB name.
+                    # This prevents duplicate subjects when Gemini returns a slightly different
+                    # abbreviation (e.g. "ML Lab" vs "Machine Learning Lab").
+                    from sqlalchemy import or_
                     subj_query = await db.execute(
                         select(Subject).where(
                             Subject.semester_id == entity_semester_id,
-                            Subject.name.ilike(f"%{subject_name}%")
+                            or_(
+                                Subject.name.ilike(f"%{subject_name}%"),
+                                Subject.name.ilike(f"{subject_name[:10]}%")  # prefix match as fallback
+                            )
                         )
                     )
                     found_subj = subj_query.scalars().first()
