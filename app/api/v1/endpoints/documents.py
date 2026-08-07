@@ -28,7 +28,8 @@ async def get_documents(
 ):
     """
     Retrieve documents relevant to the current user.
-    Returns only essential fields (no extracted_text / structured_json) for fast list loading.
+    Returns only essential fields (no extracted_text) for fast list loading.
+    structured_json is included so viewers (e.g. SyllabusViewerScreen) can render content.
     """
     import time
     t0 = time.perf_counter()
@@ -37,7 +38,8 @@ async def get_documents(
     if not current_user.department_id:
         raise HTTPException(status_code=400, detail="User is not assigned to a department")
 
-    # Only fetch lightweight columns — skip extracted_text and structured_json
+    # Only fetch lightweight columns — skip extracted_text but KEEP structured_json
+    # (SyllabusViewerScreen needs structured_json to render units/topics)
     query = (
         select(Document)
         .options(load_only(
@@ -58,15 +60,20 @@ async def get_documents(
             Document.subject_id,
             Document.uploaded_by_admin,
             Document.created_at,
+            Document.structured_json,  # Needed by SyllabusViewerScreen for unit/topic rendering
         ))
-        .where(
-            Document.department_id == current_user.department_id,
-            Document.status == "active"
-        )
+        .where(Document.status == "active")
     )
 
     if subject_id:
+        # When filtering by subject_id, trust the subject scope — don't restrict by
+        # department_id. This fixes syllabus docs uploaded with a different dept_id
+        # still appearing correctly for users of that subject.
         query = query.where(Document.subject_id == subject_id)
+    else:
+        # Without a specific subject, scope to the user's department for safety
+        query = query.where(Document.department_id == current_user.department_id)
+
     if document_type:
         query = query.where(Document.document_type == document_type)
 
