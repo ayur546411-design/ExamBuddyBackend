@@ -48,7 +48,10 @@ async def get_documents(
         logger.error("[Documents] REJECTED: user has no department_id")
         raise HTTPException(status_code=400, detail="User is not assigned to a department")
 
-    # Build query — always include structured_json (needed by SyllabusViewerScreen)
+    # Build query — include ALL fields the Pydantic schema accesses.
+    # CRITICAL: In async SQLAlchemy, any column NOT in load_only() will trigger
+    # a lazy-load during Pydantic serialization → MissingGreenlet crash.
+    # metadata_json and extracted_text MUST be included even if unused by the frontend.
     query = (
         select(Document)
         .options(load_only(
@@ -70,6 +73,8 @@ async def get_documents(
             Document.uploaded_by_admin,
             Document.created_at,
             Document.structured_json,
+            Document.metadata_json,    # Required: schema includes this, omitting causes MissingGreenlet
+            Document.extracted_text,   # Required: schema includes this, omitting causes MissingGreenlet
         ))
         .where(Document.status == "active")
     )
