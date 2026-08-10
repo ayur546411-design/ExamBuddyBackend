@@ -6,7 +6,7 @@ import jwt
 from typing import Optional
 
 from app.db.session import get_db
-from app.models.user import User
+from app.models.user import User, UserRoleEnum
 from app.schemas.user import User as UserSchema
 from app.core.config import settings
 
@@ -38,3 +38,11 @@ async def read_users_me(current_user: User = Depends(get_current_user)):
     Get current user profile
     """
     return current_user
+
+
+def ensure_admin_user(current_user: User):
+    if current_user.role != UserRoleEnum.admin and not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required"
+        )

@@ -15,3 +15,13 @@ class Semester(SemesterBase):
 
     class Config:
         from_attributes = True
+
+class SemesterCreate(SemesterBase):
+    department_id: Optional[str] = None
+
+class SemesterUpdate(BaseModel):
+    semester_number: Optional[int] = None
+    academic_year: Optional[str] = None
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+    department_id: Optional[str] = None

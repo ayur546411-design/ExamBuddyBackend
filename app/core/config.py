@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = ""
     SUPABASE_SERVICE_ROLE_KEY: str = ""
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/postgres"
+    SUPABASE_ANON_KEY: str = ""
 
     # Cloudinary
     CLOUDINARY_CLOUD_NAME: str = ""

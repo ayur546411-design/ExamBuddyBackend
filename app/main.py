@@ -92,7 +92,10 @@ def create_app() -> FastAPI:
             "status": "ok",
             "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
             "version": settings.VERSION,
-            "uptime_seconds": round(time.time() - APP_START_TIME, 1)
+            "uptime_seconds": round(time.time() - APP_START_TIME, 1),
+            "database_url_configured": bool(settings.DATABASE_URL),
+            "supabase_url_configured": bool(settings.SUPABASE_URL),
+            "database_source": "supabase" if settings.DATABASE_URL and "supabase" in settings.DATABASE_URL.lower() else "local"
         }
 
     return app

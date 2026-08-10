@@ -36,3 +36,23 @@ class School(SchoolBase):
 
     class Config:
         from_attributes = True
+class SchoolCreate(SchoolBase):
+    pass
+
+class SchoolUpdate(BaseModel):
+    name: Optional[str] = None
+    code: Optional[str] = None
+    description: Optional[str] = None
+    logo_url: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class DepartmentCreate(DepartmentBase):
+    school_id: str
+
+class DepartmentUpdate(BaseModel):
+    name: Optional[str] = None
+    code: Optional[str] = None
+    description: Optional[str] = None
+    duration_years: Optional[int] = None
+    total_semesters: Optional[int] = None
+    is_active: Optional[bool] = None

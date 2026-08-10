@@ -7,29 +7,40 @@ import json
 
 from app.db.session import get_db
 from app.models.document import Document, DocumentTypeEnum
-from app.schemas.document import Document as DocumentSchema
+from app.schemas.document import Document as DocumentSchema, DocumentUpdate
 from app.services.cloudinary_service import upload_file_to_cloudinary
 from app.services.gemini_service import extract_structured_data_from_pdf_text
 from app.services.pdf_service import extract_text_from_pdf, extract_text_from_pdf_by_pages
 from app.api.v1.endpoints.users import get_current_user
-from app.models.user import User
+from app.models.user import User, UserRoleEnum
 import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+def is_admin_user(user: User) -> bool:
+    role_value = getattr(user, 'role', None)
+    if isinstance(role_value, str):
+        if role_value.lower() == UserRoleEnum.admin.value:
+            return True
+    if role_value == UserRoleEnum.admin:
+        return True
+    return bool(user.is_admin)
+
 @router.get("/", response_model=List[DocumentSchema])
 async def get_documents(
     subject_id: Optional[str] = None,
     document_type: Optional[DocumentTypeEnum] = None,
+    status: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
     Retrieve documents for the current user.
-    - When subject_id is provided: returns all active docs for that subject (no dept filter).
+    - When subject_id is provided: returns documents for that subject.
     - When subject_id is absent: scopes to the user's department.
+    - Optionally filter by document_type and status.
     structured_json is always included so SyllabusViewerScreen can render units/topics.
     """
     import time
@@ -39,6 +50,9 @@ async def get_documents(
     logger.info("[Documents] ---- REQUEST START ----")
     logger.info(f"[Documents] user_id       = {current_user.id}")
     logger.info(f"[Documents] user_name     = {current_user.full_name}")
+    logger.info(f"[Documents] role          = {current_user.role}")
+    logger.info(f"[Documents] is_admin      = {current_user.is_admin}")
+    logger.info(f"[Documents] admin_user    = {is_admin_user(current_user)}")
     logger.info(f"[Documents] dept_id       = {current_user.department_id}")
     logger.info(f"[Documents] school_id     = {current_user.school_id}")
     logger.info(f"[Documents] param subject_id     = {subject_id}")
@@ -76,17 +90,22 @@ async def get_documents(
             Document.metadata_json,    # Required: schema includes this, omitting causes MissingGreenlet
             Document.extracted_text,   # Required: schema includes this, omitting causes MissingGreenlet
         ))
-        .where(Document.status == "active")
     )
+
+    if status:
+        query = query.where(Document.status == status)
+        logger.info(f"[Documents] filter: status = {status}")
 
     if subject_id:
         # subject_id is the tightest scope — no dept filter needed
         query = query.where(Document.subject_id == subject_id)
         logger.info(f"[Documents] filter: subject_id = {subject_id}")
-    else:
-        # Scope to user's department
+    elif not is_admin_user(current_user):
+        # Non-admins only see documents for their own department
         query = query.where(Document.department_id == current_user.department_id)
         logger.info(f"[Documents] filter: department_id = {current_user.department_id}")
+    else:
+        logger.info("[Documents] admin user: no department filter applied")
 
     if document_type:
         query = query.where(Document.document_type == document_type)
@@ -101,6 +120,70 @@ async def get_documents(
         logger.warning(f"[Documents] EMPTY RESULT — subject_id={subject_id} dept={current_user.department_id} type={document_type}")
     logger.info("[Documents] ---- REQUEST END ----")
     return documents
+
+@router.get("/{document_id}", response_model=DocumentSchema)
+async def get_document(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Retrieve a single document by its ID for the current user."""
+    logger.info(f"[DocumentDetail] user_id={current_user.id} role={current_user.role} is_admin={current_user.is_admin} admin={is_admin_user(current_user)} dept={current_user.department_id}")
+
+    if not is_admin_user(current_user) and not current_user.department_id:
+        raise HTTPException(status_code=400, detail="User is not assigned to a department")
+
+    document_query = select(Document).where(Document.id == document_id)
+    if not is_admin_user(current_user):
+        document_query = document_query.where(Document.department_id == current_user.department_id)
+
+    result = await db.execute(document_query)
+    document = result.scalars().first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return document
+
+@router.put("/{document_id}", response_model=DocumentSchema)
+async def update_document(
+    document_id: str,
+    document_in: DocumentUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Update editable document fields and structured JSON."""
+    if not is_admin_user(current_user) and not current_user.department_id:
+        raise HTTPException(status_code=400, detail="User is not assigned to a department")
+
+    document_query = select(Document).where(Document.id == document_id)
+    if not is_admin_user(current_user):
+        document_query = document_query.where(Document.department_id == current_user.department_id)
+
+    result = await db.execute(document_query)
+    document = result.scalars().first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    updatable_fields = [
+        "title",
+        "description",
+        "academic_year",
+        "keywords",
+        "metadata_json",
+        "structured_json",
+        "status",
+        "semester_id",
+        "subject_id",
+    ]
+
+    for field in updatable_fields:
+        value = getattr(document_in, field)
+        if value is not None:
+            setattr(document, field, value)
+
+    db.add(document)
+    await db.commit()
+    await db.refresh(document)
+    return document
 
 @router.post("/upload")
 async def upload_document(

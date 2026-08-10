@@ -30,6 +30,17 @@ class Document(DocumentBase):
     class Config:
         from_attributes = True
 
+class DocumentUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    academic_year: Optional[str] = None
+    keywords: Optional[str] = None
+    metadata_json: Optional[Any] = None
+    structured_json: Optional[Any] = None
+    status: Optional[str] = None
+    semester_id: Optional[str] = None
+    subject_id: Optional[str] = None
+
 class QuestionSchema(BaseModel):
     id: str
     question_number: str

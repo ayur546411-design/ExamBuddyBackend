@@ -6,13 +6,22 @@ from typing import List
 from app.db.session import get_db
 from app.models.semester import Semester
 from app.schemas.semester import Semester as SemesterSchema
-from app.models.user import User
+from app.models.user import User, UserRoleEnum
 from app.api.v1.endpoints.users import get_current_user
 
 import logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+def is_admin_user(user: User) -> bool:
+    role_value = getattr(user, 'role', None)
+    if isinstance(role_value, str):
+        if role_value.lower() == UserRoleEnum.admin.value:
+            return True
+    if role_value == UserRoleEnum.admin:
+        return True
+    return bool(user.is_admin)
 
 @router.get("/", response_model=List[SemesterSchema])
 async def get_semesters(

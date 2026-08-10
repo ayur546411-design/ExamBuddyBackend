@@ -6,7 +6,7 @@ from typing import List, Optional
 from app.db.session import get_db
 from app.models.subject import Subject
 from app.schemas.subject import Subject as SubjectSchema
-from app.models.user import User
+from app.models.user import User, UserRoleEnum
 from app.models.document import Document, DocumentTypeEnum
 from app.schemas.document import QuestionSchema
 from app.api.v1.endpoints.users import get_current_user
@@ -16,6 +16,15 @@ import uuid
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+def is_admin_user(user: User) -> bool:
+    role_value = getattr(user, 'role', None)
+    if isinstance(role_value, str):
+        if role_value.lower() == UserRoleEnum.admin.value:
+            return True
+    if role_value == UserRoleEnum.admin:
+        return True
+    return bool(user.is_admin)
 
 @router.get("/", response_model=List[SubjectSchema])
 async def get_subjects(
@@ -34,10 +43,9 @@ async def get_subjects(
         logger.warning(f"[Subjects] REJECTED: user {current_user.full_name} has no department_id")
         raise HTTPException(status_code=400, detail="User is not assigned to a department")
         
-    query = select(Subject).where(
-        Subject.department_id == current_user.department_id, 
-        Subject.is_active == True
-    )
+    query = select(Subject).where(Subject.is_active == True)
+    if not is_admin_user(current_user):
+        query = query.where(Subject.department_id == current_user.department_id)
     
     if semester_id:
         query = query.where(Subject.semester_id == semester_id)
