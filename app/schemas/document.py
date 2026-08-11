@@ -17,6 +17,10 @@ class DocumentBase(BaseModel):
     structured_json: Optional[Any] = None
     extracted_text: Optional[str] = None
     status: Optional[str] = "active"
+    exam_type: Optional[str] = None
+    pdf_url: Optional[str] = None
+    youtube_url: Optional[str] = None
+    video_title: Optional[str] = None
 
 class Document(DocumentBase):
     id: str
@@ -40,6 +44,10 @@ class DocumentUpdate(BaseModel):
     status: Optional[str] = None
     semester_id: Optional[str] = None
     subject_id: Optional[str] = None
+    exam_type: Optional[str] = None
+    pdf_url: Optional[str] = None
+    youtube_url: Optional[str] = None
+    video_title: Optional[str] = None
 
 class QuestionSchema(BaseModel):
     id: str

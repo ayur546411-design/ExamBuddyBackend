@@ -193,7 +193,13 @@ async def upload_document(
     subject_id: Optional[str] = Form(None),
     semester_id: Optional[str] = Form(None),
     academic_year: Optional[str] = Form(None),
+    title: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
     document_type: DocumentTypeEnum = Form(DocumentTypeEnum.syllabus),  # default = syllabus (most common upload)
+    exam_type: Optional[str] = Form(None),
+    pdf_url: Optional[str] = Form(None),
+    youtube_url: Optional[str] = Form(None),
+    video_title: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -233,48 +239,59 @@ async def upload_document(
             
     doc_type_enum = document_type
         
-    if not file.filename.endswith(".pdf"):
+    if file.filename and not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
         
     try:
-        # Read file bytes
-        file_bytes = await file.read()
+        file_bytes = None
+        cloudinary_url = None
+        cloudinary_public_id = None
+        file_size = None
+        file_format = None
+
+        if file.filename:
+            file_bytes = await file.read()
+            cloudinary_res = await upload_file_to_cloudinary(file_bytes, file.filename)
+            cloudinary_url = cloudinary_res.get("url")
+            cloudinary_public_id = cloudinary_res.get("public_id")
+            file_size = cloudinary_res.get("bytes")
+            file_format = cloudinary_res.get("format")
+
+        if document_type == DocumentTypeEnum.pyq and not cloudinary_url and not pdf_url:
+            raise HTTPException(status_code=400, detail="PYQ uploads require a PDF file or a direct pdf_url")
         
-        # 1. Upload to Cloudinary
-        cloudinary_res = await upload_file_to_cloudinary(file_bytes, file.filename)
-        cloudinary_url = cloudinary_res.get("url")
-        cloudinary_public_id = cloudinary_res.get("public_id")
-        file_size = cloudinary_res.get("bytes")
-        file_format = cloudinary_res.get("format")
-        
-        # 2. Extract Text from PDF (page-by-page for full coverage)
-        logger.info("[Upload] Starting PDF text extraction...")
-        pages_dict = await extract_text_from_pdf_by_pages(file_bytes)
-        total_pages = len(pages_dict)
-        non_empty_pages = sum(1 for t in pages_dict.values() if t.strip())
-        logger.info(f"[Upload] PDF pages: {total_pages} total, {non_empty_pages} with text")
-        
-        # Build full text with page markers for Gemini
-        pdf_text = ""
-        for page_num, text in pages_dict.items():
-            if text.strip():
-                pdf_text += f"\n--- PAGE {page_num} ---\n{text}\n"
-            else:
-                pdf_text += f"\n--- PAGE {page_num} (empty) ---\n"
-        
-        if not pdf_text.strip():
-            raise HTTPException(status_code=422, detail="Could not extract any text from this PDF. It may be a scanned image-only PDF.")
-        
-        # 3. Get Structured JSON from Gemini
-        logger.info(f"[Upload] Sending {len(pdf_text)} chars to Gemini for {document_type} extraction...")
+        # 2. Extract text only for non-PYQ documents; PYQ uploads are stored as direct PDF/video references.
+        pdf_text = None
         structured_data = {}
-        try:
-            structured_data = await extract_structured_data_from_pdf_text(pdf_text, document_type)
-            if "error" in structured_data:
-                logger.error(f"[Upload] Gemini extraction error: {structured_data['error']}")
-        except Exception as gemini_e:
-            logger.error(f"[Upload] Gemini extraction exception: {gemini_e}")
-            structured_data = {"error": f"Gemini extraction failed: {str(gemini_e)}"}
+        if file_bytes is not None and document_type != DocumentTypeEnum.pyq:
+            logger.info("[Upload] Starting PDF text extraction...")
+            pages_dict = await extract_text_from_pdf_by_pages(file_bytes)
+            total_pages = len(pages_dict)
+            non_empty_pages = sum(1 for t in pages_dict.values() if t.strip())
+            logger.info(f"[Upload] PDF pages: {total_pages} total, {non_empty_pages} with text")
+            
+            pdf_text = ""
+            for page_num, text in pages_dict.items():
+                if text.strip():
+                    pdf_text += f"\n--- PAGE {page_num} ---\n{text}\n"
+                else:
+                    pdf_text += f"\n--- PAGE {page_num} (empty) ---\n"
+            
+            if not pdf_text.strip():
+                raise HTTPException(status_code=422, detail="Could not extract any text from this PDF. It may be a scanned image-only PDF.")
+            
+            logger.info(f"[Upload] Sending {len(pdf_text)} chars to Gemini for {document_type} extraction...")
+            try:
+                structured_data = await extract_structured_data_from_pdf_text(pdf_text, document_type)
+                if "error" in structured_data:
+                    logger.error(f"[Upload] Gemini extraction error: {structured_data['error']}")
+            except Exception as gemini_e:
+                logger.error(f"[Upload] Gemini extraction exception: {gemini_e}")
+                structured_data = {"error": f"Gemini extraction failed: {str(gemini_e)}"}
+        else:
+            total_pages = 0
+            non_empty_pages = 0
+            pdf_text = ""
         
         # 4. Process all entities in structured_json and Save to Database
         entities = []
@@ -485,7 +502,7 @@ async def upload_document(
                 
                 new_doc = Document(
                     document_type=doc_type_enum,
-                    cloudinary_url=cloudinary_url,
+                    cloudinary_url=cloudinary_url or pdf_url or '',
                     cloudinary_public_id=cloudinary_public_id,
                     file_size=file_size,
                     file_type=file_format,
@@ -500,6 +517,20 @@ async def upload_document(
                     semester_id=entity_semester_id,
                     subject_id=entity_subject_id
                 )
+                if doc_type_enum == DocumentTypeEnum.pyq:
+                    new_doc.metadata_json = {
+                        **(new_doc.metadata_json or {}),
+                        "exam_type": exam_type,
+                        "pdf_url": pdf_url,
+                        "youtube_url": youtube_url,
+                        "video_title": video_title,
+                    }
+                    new_doc.structured_json = {
+                        "exam_type": exam_type,
+                        "pdf_url": pdf_url,
+                        "youtube_url": youtube_url,
+                        "video_title": video_title,
+                    }
                 db.add(new_doc)
                 await db.commit() # Commit individually to ensure foreign keys are saved
                 inserted_count += 1
