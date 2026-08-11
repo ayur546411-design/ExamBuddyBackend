@@ -1,11 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from typing import List, Optional
 
 from app.db.session import get_db
+from app.models.department import Department
+from app.models.semester import Semester
 from app.models.subject import Subject
-from app.schemas.subject import Subject as SubjectSchema
+from app.schemas.subject import Subject as SubjectSchema, SubjectCreate
 from app.models.user import User, UserRoleEnum
 from app.models.document import Document, DocumentTypeEnum
 from app.schemas.document import QuestionSchema
@@ -29,36 +31,93 @@ def is_admin_user(user: User) -> bool:
 @router.get("/", response_model=List[SubjectSchema])
 async def get_subjects(
     semester_id: Optional[str] = None,
+    department_id: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Retrieve all active subjects for the current user's department.
-    Optionally filter by semester_id.
+    Retrieve active subjects. Admins can fetch all subjects; regular users only see their own department.
     """
     logger.info("[Subjects] ---- REQUEST START ----")
-    logger.info(f"[Subjects] user={current_user.full_name} dept_id={current_user.department_id} semester_id={semester_id}")
-    
-    if not current_user.department_id:
+    logger.info(f"[Subjects] user={current_user.full_name} dept_id={current_user.department_id} semester_id={semester_id} department_id={department_id}")
+
+    if not current_user.department_id and not is_admin_user(current_user):
         logger.warning(f"[Subjects] REJECTED: user {current_user.full_name} has no department_id")
         raise HTTPException(status_code=400, detail="User is not assigned to a department")
-        
+
     query = select(Subject).where(Subject.is_active == True)
-    if not is_admin_user(current_user):
+    if department_id:
+        if not is_admin_user(current_user) and current_user.department_id != department_id:
+            raise HTTPException(status_code=403, detail="Not allowed to access this department")
+        query = query.where(Subject.department_id == department_id)
+    elif not is_admin_user(current_user):
         query = query.where(Subject.department_id == current_user.department_id)
-    
+
     if semester_id:
         query = query.where(Subject.semester_id == semester_id)
         logger.info(f"[Subjects] filter: semester_id = {semester_id}")
-        
+
     result = await db.execute(query)
     subjects = result.scalars().all()
-    
-    logger.info(f"[Subjects] RESULT: {len(subjects)} subjects for dept={current_user.department_id}")
+
+    logger.info(f"[Subjects] RESULT: {len(subjects)} subjects")
     if not subjects:
-        logger.warning(f"[Subjects] EMPTY RESULT - dept_id={current_user.department_id} semester_id={semester_id}. No subjects uploaded for this dept yet.")
+        logger.warning("[Subjects] EMPTY RESULT - no subjects found for the requested scope")
     logger.info("[Subjects] ---- REQUEST END ----")
     return subjects
+
+@router.post("/", response_model=SubjectSchema, status_code=status.HTTP_201_CREATED)
+async def create_subject(
+    subject_in: SubjectCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Create a new subject under a department and semester."""
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Only admins can create subjects")
+
+    if not subject_in.department_id or not subject_in.semester_id:
+        raise HTTPException(status_code=400, detail="Department and semester are required")
+
+    department = await db.get(Department, subject_in.department_id)
+    if not department or not department.is_active:
+        raise HTTPException(status_code=404, detail="Department not found")
+
+    semester = await db.get(Semester, subject_in.semester_id)
+    if not semester or not semester.is_active or semester.department_id != subject_in.department_id:
+        raise HTTPException(status_code=404, detail="Semester not found for this department")
+
+    school_id = subject_in.school_id or department.school_id
+    if school_id != department.school_id:
+        raise HTTPException(status_code=400, detail="School does not match the selected department")
+
+    existing = await db.execute(
+        select(Subject).where(
+            Subject.department_id == subject_in.department_id,
+            Subject.semester_id == subject_in.semester_id,
+            Subject.name == subject_in.name,
+            Subject.is_active == True,
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Subject already exists for this semester")
+
+    subject = Subject(
+        school_id=school_id,
+        department_id=subject_in.department_id,
+        semester_id=subject_in.semester_id,
+        name=subject_in.name,
+        code=subject_in.code,
+        description=subject_in.description,
+        credits=subject_in.credits,
+        faculty_name=subject_in.faculty_name,
+        subject_type=subject_in.subject_type,
+        is_active=subject_in.is_active,
+    )
+    db.add(subject)
+    await db.commit()
+    await db.refresh(subject)
+    return subject
 
 @router.get("/{subject_id}/questions", response_model=List[QuestionSchema])
 async def get_subject_questions(
