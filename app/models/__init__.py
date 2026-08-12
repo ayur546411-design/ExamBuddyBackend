@@ -5,3 +5,4 @@ from .semester import Semester
 from .subject import Subject
 from .document import Document
 from .user import User
+from .notification import Notification
