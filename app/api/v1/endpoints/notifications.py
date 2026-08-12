@@ -72,25 +72,33 @@ async def broadcast_notification(
 ):
     if not is_admin_user(current_user):
         raise HTTPException(status_code=403, detail="Only admins can broadcast notifications")
+    # Add defensive error handling to surface runtime exceptions during broadcast
+    try:
+        from sqlalchemy import select as sa_select
+        result = await db.execute(sa_select(User.id).where(User.is_active == True))
+        user_ids = result.scalars().all()
 
-    from sqlalchemy import select as sa_select
-    result = await db.execute(sa_select(User.id).where(User.is_active == True))
-    user_ids = result.scalars().all()
+        created = []
+        for user_id in user_ids:
+            item = Notification(
+                user_id=user_id,
+                title=payload.title,
+                body=payload.body,
+                is_read=False,
+            )
+            db.add(item)
+            await db.flush()
+            created.append(item)
 
-    created = []
-    for user_id in user_ids:
-        item = Notification(
-            user_id=user_id,
-            title=payload.title,
-            body=payload.body,
-            is_read=False,
-        )
-        db.add(item)
-        await db.flush()
-        created.append(item)
+        await db.commit()
+        return created
+    except Exception as exc:
+        # Log and return the exception detail to help debugging (temporary)
+        import logging
 
-    await db.commit()
-    return created
+        logger = logging.getLogger(__name__)
+        logger.exception('Broadcast failed')
+        raise HTTPException(status_code=500, detail=f'Broadcast failed: {exc}')
 
 
 @router.patch("/{notification_id}/read", response_model=NotificationSchema)
