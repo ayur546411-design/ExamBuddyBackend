@@ -11,7 +11,7 @@ class SemesterBase(BaseModel):
 class Semester(SemesterBase):
     id: str
     department_id: str
-    created_at: datetime
+    created_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

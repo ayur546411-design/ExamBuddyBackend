@@ -33,11 +33,14 @@ async def get_documents(
     subject_id: Optional[str] = None,
     document_type: Optional[DocumentTypeEnum] = None,
     status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 25,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
     Retrieve documents for the current user.
+    The response is paginated so the admin dashboard can render faster.
     - When subject_id is provided: returns documents for that subject.
     - When subject_id is absent: scopes to the user's department.
     - Optionally filter by document_type and status.
@@ -111,11 +114,13 @@ async def get_documents(
         query = query.where(Document.document_type == document_type)
         logger.info(f"[Documents] filter: document_type = {document_type}")
 
-    result = await db.execute(query.order_by(Document.created_at.desc()))
+    query = query.order_by(Document.created_at.desc())
+    query = query.offset((page - 1) * page_size).limit(page_size)
+    result = await db.execute(query)
     documents = result.scalars().all()
 
     elapsed = round((time.perf_counter() - t0) * 1000, 2)
-    logger.info(f"[Documents] RESULT: {len(documents)} document(s) returned in {elapsed}ms")
+    logger.info(f"[Documents] RESULT: {len(documents)} document(s) returned in {elapsed}ms page={page} page_size={page_size}")
     if len(documents) == 0:
         logger.warning(f"[Documents] EMPTY RESULT — subject_id={subject_id} dept={current_user.department_id} type={document_type}")
     logger.info("[Documents] ---- REQUEST END ----")

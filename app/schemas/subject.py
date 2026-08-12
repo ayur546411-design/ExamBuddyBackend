@@ -17,7 +17,7 @@ class Subject(SubjectBase):
     school_id: str
     department_id: str
     semester_id: str
-    created_at: datetime
+    created_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

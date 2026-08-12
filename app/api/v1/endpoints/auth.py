@@ -6,6 +6,8 @@ from datetime import timedelta
 import uuid
 
 from app.db.session import get_db
+from app.models.school import School
+from app.models.department import Department
 from app.models.user import User
 from app.schemas.user import UserCreate, User as UserSchema
 from app.schemas.token import Token
@@ -22,6 +24,17 @@ async def onboard_student(user_in: UserCreate, db: AsyncSession = Depends(get_db
     """
     if not user_in.full_name or not user_in.school_id or not user_in.department_id:
         raise HTTPException(status_code=400, detail="Name, School, and Department are required.")
+
+    school = await db.get(School, user_in.school_id)
+    if school is None or not school.is_active:
+        raise HTTPException(status_code=400, detail="Selected school is invalid or inactive.")
+
+    department = await db.get(Department, user_in.department_id)
+    if department is None or not department.is_active:
+        raise HTTPException(status_code=400, detail="Selected department is invalid or inactive.")
+
+    if department.school_id != user_in.school_id:
+        raise HTTPException(status_code=400, detail="Selected department does not belong to the selected school.")
 
     user_id = str(uuid.uuid4())
     

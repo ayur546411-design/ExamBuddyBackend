@@ -2,7 +2,7 @@ import asyncio
 import sys
 import os
 import requests
-import jwt
+from jose import jwt
 from datetime import datetime, timedelta
 
 # Add the Backend directory to path so we can import app modules
