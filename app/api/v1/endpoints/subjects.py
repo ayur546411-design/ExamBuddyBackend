@@ -7,7 +7,7 @@ from app.db.session import get_db
 from app.models.department import Department
 from app.models.semester import Semester
 from app.models.subject import Subject
-from app.schemas.subject import Subject as SubjectSchema, SubjectCreate
+from app.schemas.subject import Subject as SubjectSchema, SubjectCreate, SubjectUpdate
 from app.models.user import User, UserRoleEnum
 from app.models.document import Document, DocumentTypeEnum
 from app.schemas.document import QuestionSchema
@@ -65,6 +65,66 @@ async def get_subjects(
         logger.warning("[Subjects] EMPTY RESULT - no subjects found for the requested scope")
     logger.info("[Subjects] ---- REQUEST END ----")
     return subjects
+
+@router.put("/{subject_id}", response_model=SubjectSchema)
+async def update_subject(
+    subject_id: str,
+    subject_in: SubjectUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if not is_admin_user(current_user) and not current_user.department_id:
+        raise HTTPException(status_code=400, detail="User is not assigned to a department")
+
+    subject_query = select(Subject).where(Subject.id == subject_id)
+    if not is_admin_user(current_user):
+        subject_query = subject_query.where(Subject.department_id == current_user.department_id)
+
+    result = await db.execute(subject_query)
+    subject = result.scalars().first()
+    if not subject:
+        raise HTTPException(status_code=404, detail="Subject not found")
+
+    if subject_in.department_id is not None:
+        department = await db.get(Department, subject_in.department_id)
+        if not department or not department.is_active:
+            raise HTTPException(status_code=404, detail="Department not found")
+        subject.department_id = subject_in.department_id
+        if subject_in.school_id is None:
+            subject.school_id = department.school_id
+
+    if subject_in.semester_id is not None:
+        semester = await db.get(Semester, subject_in.semester_id)
+        if not semester or not semester.is_active:
+            raise HTTPException(status_code=404, detail="Semester not found")
+        if subject_in.department_id is not None and semester.department_id != subject_in.department_id:
+            raise HTTPException(status_code=400, detail="Semester does not belong to the selected department")
+        if subject_in.department_id is None and semester.department_id != subject.department_id:
+            raise HTTPException(status_code=400, detail="Semester does not belong to the subject's department")
+        subject.semester_id = subject_in.semester_id
+
+    if subject_in.school_id is not None:
+        subject.school_id = subject_in.school_id
+
+    updatable_fields = [
+        "name",
+        "code",
+        "description",
+        "credits",
+        "faculty_name",
+        "subject_type",
+        "is_active"
+    ]
+
+    for field in updatable_fields:
+        value = getattr(subject_in, field)
+        if value is not None:
+            setattr(subject, field, value)
+
+    db.add(subject)
+    await db.commit()
+    await db.refresh(subject)
+    return subject
 
 @router.post("/", response_model=SubjectSchema, status_code=status.HTTP_201_CREATED)
 async def create_subject(
