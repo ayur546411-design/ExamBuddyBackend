@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: exambuddy-backend
+    env: python
+    plan: starter
+    runtime: python-3.11
+    buildCommand: pip install -r requirements.txt
+    startCommand: alembic upgrade head && gunicorn app.main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11
