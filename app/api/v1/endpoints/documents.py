@@ -35,6 +35,8 @@ async def get_documents(
     status: Optional[str] = None,
     page: int = 1,
     page_size: int = 25,
+    department_id: Optional[str] = None,
+    semester_id: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -103,6 +105,10 @@ async def get_documents(
         # subject_id is the tightest scope — no dept filter needed
         query = query.where(Document.subject_id == subject_id)
         logger.info(f"[Documents] filter: subject_id = {subject_id}")
+    elif department_id:
+        # explicit department filter (admins can scope by department)
+        query = query.where(Document.department_id == department_id)
+        logger.info(f"[Documents] filter: department_id = {department_id}")
     elif not is_admin_user(current_user):
         # Non-admins only see documents for their own department
         query = query.where(Document.department_id == current_user.department_id)
@@ -114,8 +120,14 @@ async def get_documents(
         query = query.where(Document.document_type == document_type)
         logger.info(f"[Documents] filter: document_type = {document_type}")
 
+    if semester_id:
+        query = query.where(Document.semester_id == semester_id)
+        logger.info(f"[Documents] filter: semester_id = {semester_id}")
+
     query = query.order_by(Document.created_at.desc())
-    query = query.offset((page - 1) * page_size).limit(page_size)
+    # Pagination: allow page_size <= 0 to indicate "no limit" (return all matching rows)
+    if page_size and page_size > 0:
+        query = query.offset((page - 1) * page_size).limit(page_size)
     result = await db.execute(query)
     documents = result.scalars().all()
 
