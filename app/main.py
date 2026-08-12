@@ -55,7 +55,6 @@ def create_app() -> FastAPI:
         return response
 
     from fastapi.exceptions import RequestValidationError
-    from fastapi import Request
     from fastapi.responses import JSONResponse
     import logging
     
@@ -85,18 +84,18 @@ def create_app() -> FastAPI:
     async def root():
         return {"message": "Welcome to ExamBuddy API"}
 
+    @app.get("/api/health")
+    async def api_health():
+        """
+        Lightweight health-check endpoint for Render/UptimeRobot monitoring.
+        Returns immediately without calling external services (Supabase, Cloudinary, Gemini).
+        """
+        return {"status": "online"}
+
     @app.get("/health")
     async def health_check():
         """Lightweight health endpoint — used by mobile app to wake Render and check server status."""
-        return {
-            "status": "ok",
-            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
-            "version": settings.VERSION,
-            "uptime_seconds": round(time.time() - APP_START_TIME, 1),
-            "database_url_configured": bool(settings.DATABASE_URL),
-            "supabase_url_configured": bool(settings.SUPABASE_URL),
-            "database_source": "supabase" if settings.DATABASE_URL and "supabase" in settings.DATABASE_URL.lower() else "local"
-        }
+        return {"status": "ok"}
 
     return app
 
