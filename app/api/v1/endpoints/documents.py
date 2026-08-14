@@ -278,6 +278,16 @@ async def upload_document(
                 resource_type = 'image'
 
             file_bytes = await file.read()
+            
+            # Validate file size (Cloudinary free tier limit is 10 MB)
+            max_file_size = 10 * 1024 * 1024  # 10 MB
+            if len(file_bytes) > max_file_size:
+                size_mb = len(file_bytes) / (1024 * 1024)
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File size ({size_mb:.1f} MB) exceeds maximum allowed size of 10 MB"
+                )
+            
             cloudinary_res = await upload_file_to_cloudinary(file_bytes, file.filename, resource_type=resource_type)
             cloudinary_url = cloudinary_res.get("url")
             cloudinary_public_id = cloudinary_res.get("public_id")
