@@ -204,7 +204,7 @@ async def update_document(
 
 @router.post("/upload")
 async def upload_document(
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
     school_id: str = Form(...),
     department_id: str = Form(...),
     subject_id: Optional[str] = Form(None),
@@ -255,27 +255,37 @@ async def upload_document(
             subject_id = None # Just ignore if invalid
             
     doc_type_enum = document_type
-        
-    if file.filename and not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
-        
+
+    allowed_exts = {'.pdf'}
+    if document_type == DocumentTypeEnum.pyq:
+        allowed_exts = {'.pdf', '.png', '.jpg', '.jpeg', '.webp'}
+
     try:
         file_bytes = None
         cloudinary_url = None
         cloudinary_public_id = None
         file_size = None
         file_format = None
+        resource_type = 'raw'
 
-        if file.filename:
+        if file is not None and file.filename:
+            filename = file.filename.lower()
+            extension = '.' + filename.rsplit('.', 1)[-1] if '.' in filename else ''
+            if extension not in allowed_exts:
+                raise HTTPException(status_code=400, detail=f"Only {', '.join(sorted(allowed_exts))} files are supported for this document type.")
+
+            if extension in {'.png', '.jpg', '.jpeg', '.webp'}:
+                resource_type = 'image'
+
             file_bytes = await file.read()
-            cloudinary_res = await upload_file_to_cloudinary(file_bytes, file.filename)
+            cloudinary_res = await upload_file_to_cloudinary(file_bytes, file.filename, resource_type=resource_type)
             cloudinary_url = cloudinary_res.get("url")
             cloudinary_public_id = cloudinary_res.get("public_id")
             file_size = cloudinary_res.get("bytes")
             file_format = cloudinary_res.get("format")
 
         if document_type == DocumentTypeEnum.pyq and not cloudinary_url and not pdf_url:
-            raise HTTPException(status_code=400, detail="PYQ uploads require a PDF file or a direct pdf_url")
+            raise HTTPException(status_code=400, detail="PYQ uploads require a PDF/image file or a direct pdf_url")
         
         # 2. Extract text only for non-PYQ documents; PYQ uploads are stored as direct PDF/video references.
         pdf_text = None
@@ -535,15 +545,16 @@ async def upload_document(
                     subject_id=entity_subject_id
                 )
                 if doc_type_enum == DocumentTypeEnum.pyq:
+                    normalized_exam_type = (exam_type or '').strip().lower() if exam_type else None
                     new_doc.metadata_json = {
                         **(new_doc.metadata_json or {}),
-                        "exam_type": exam_type,
+                        "exam_type": normalized_exam_type,
                         "pdf_url": pdf_url,
                         "youtube_url": youtube_url,
                         "video_title": video_title,
                     }
                     new_doc.structured_json = {
-                        "exam_type": exam_type,
+                        "exam_type": normalized_exam_type,
                         "pdf_url": pdf_url,
                         "youtube_url": youtube_url,
                         "video_title": video_title,
