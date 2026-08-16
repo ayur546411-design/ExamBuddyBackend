@@ -294,8 +294,8 @@ async def upload_document(
             file_size = cloudinary_res.get("bytes")
             file_format = cloudinary_res.get("format")
 
-        if document_type == DocumentTypeEnum.pyq and not cloudinary_url and not pdf_url:
-            raise HTTPException(status_code=400, detail="PYQ uploads require a PDF/image file or a direct pdf_url")
+        if document_type == DocumentTypeEnum.pyq and not cloudinary_url and not pdf_url and not youtube_url:
+            raise HTTPException(status_code=400, detail="PYQ uploads require a PDF/image file, a direct pdf_url, or a YouTube video URL")
         
         # 2. Extract text only for non-PYQ documents; PYQ uploads are stored as direct PDF/video references.
         pdf_text = None
@@ -539,7 +539,7 @@ async def upload_document(
                 
                 new_doc = Document(
                     document_type=doc_type_enum,
-                    cloudinary_url=cloudinary_url or pdf_url or '',
+                    cloudinary_url=cloudinary_url or pdf_url or youtube_url or '',
                     cloudinary_public_id=cloudinary_public_id,
                     file_size=file_size,
                     file_type=file_format,
