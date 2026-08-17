@@ -16,7 +16,7 @@ class User(Base):
     school_id = Column(String, ForeignKey("schools.id", ondelete="SET NULL"), nullable=True, index=True)
     department_id = Column(String, ForeignKey("departments.id", ondelete="SET NULL"), nullable=True, index=True)
     
-    mobile_number = Column(String, unique=True, index=True, nullable=True) # Optional
+    mobile_number = Column(String, index=True, nullable=True) # Optional, not unique (multiple users can have NULL)
     hashed_password = Column(String, nullable=False)
     
     full_name = Column(String, index=True, nullable=False)

@@ -2,8 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.exc import IntegrityError
 from datetime import timedelta
 import uuid
+import logging
 
 from app.db.session import get_db
 from app.models.school import School
@@ -14,6 +16,7 @@ from app.schemas.token import Token
 from app.utils.security import verify_password, get_password_hash, create_access_token
 from app.core.config import settings
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.post("/onboard", response_model=Token, status_code=status.HTTP_201_CREATED)
@@ -52,9 +55,18 @@ async def onboard_student(user_in: UserCreate, db: AsyncSession = Depends(get_db
         role=user_in.role
     )
     
-    db.add(user)
-    await db.commit()
-    await db.refresh(user)
+    try:
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+    except IntegrityError as e:
+        await db.rollback()
+        logger.error(f"Database integrity error during onboarding: {str(e)}")
+        raise HTTPException(status_code=400, detail="Failed to create user account. Please try again.")
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Unexpected error during onboarding: {str(e)}")
+        raise HTTPException(status_code=500, detail="An unexpected error occurred during onboarding.")
     
     # Automatically log them in
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
