@@ -19,6 +19,29 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
+def _normalize_subject_label(value: Optional[str]) -> str:
+    return (value or '').strip().lower().replace(' ', '')
+
+
+def _subject_identity_matches(existing: Subject, name: Optional[str], code: Optional[str]) -> bool:
+    normalized_name = _normalize_subject_label(name)
+    normalized_code = _normalize_subject_label(code)
+
+    if not normalized_name and not normalized_code:
+        return False
+
+    if normalized_code and existing.code:
+        if _normalize_subject_label(existing.code) == normalized_code:
+            return True
+
+    if normalized_name and existing.name:
+        if _normalize_subject_label(existing.name) == normalized_name:
+            return True
+
+    return False
+
+
 def is_admin_user(user: User) -> bool:
     role_value = getattr(user, 'role', None)
     if isinstance(role_value, str):
@@ -139,6 +162,13 @@ async def create_subject(
     if not subject_in.department_id or not subject_in.semester_id:
         raise HTTPException(status_code=400, detail="Department and semester are required")
 
+    name = (subject_in.name or '').strip()
+    code = (subject_in.code or '').strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Subject name is required")
+    if not code:
+        raise HTTPException(status_code=400, detail="Subject code is required")
+
     department = await db.get(Department, subject_in.department_id)
     if not department or not department.is_active:
         raise HTTPException(status_code=404, detail="Department not found")
@@ -151,33 +181,73 @@ async def create_subject(
     if school_id != department.school_id:
         raise HTTPException(status_code=400, detail="School does not match the selected department")
 
-    existing = await db.execute(
+    existing_query = await db.execute(
         select(Subject).where(
+            Subject.is_active == True,
+            Subject.school_id == school_id,
             Subject.department_id == subject_in.department_id,
             Subject.semester_id == subject_in.semester_id,
-            Subject.name == subject_in.name,
-            Subject.is_active == True,
         )
     )
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Subject already exists for this semester")
+    existing_subjects = existing_query.scalars().all()
 
-    subject = Subject(
-        school_id=school_id,
-        department_id=subject_in.department_id,
-        semester_id=subject_in.semester_id,
-        name=subject_in.name,
-        code=subject_in.code,
-        description=subject_in.description,
-        credits=subject_in.credits,
-        faculty_name=subject_in.faculty_name,
-        subject_type=subject_in.subject_type,
-        is_active=subject_in.is_active,
+    for existing in existing_subjects:
+        if _subject_identity_matches(existing, name, code):
+            existing.name = name
+            existing.code = code
+            existing.description = existing.description or (subject_in.description or '')
+            existing.credits = subject_in.credits if subject_in.credits is not None else existing.credits
+            existing.faculty_name = subject_in.faculty_name or existing.faculty_name
+            existing.subject_type = subject_in.subject_type or existing.subject_type
+            existing.school_id = school_id
+            existing.department_id = subject_in.department_id
+            existing.semester_id = subject_in.semester_id
+            db.add(existing)
+            await db.commit()
+            await db.refresh(existing)
+            return existing
+
+    global_code_match = await db.execute(
+        select(Subject).where(
+            Subject.is_active == True,
+            Subject.code == code,
+        )
     )
-    db.add(subject)
-    await db.commit()
-    await db.refresh(subject)
-    return subject
+    global_code_subject = global_code_match.scalars().first()
+    if global_code_subject and global_code_subject.id != (locals().get('existing', None) and existing.id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Subject code '{code}' already exists for another department/semester. Use a unique code or update the existing subject."
+        )
+
+    try:
+        subject = Subject(
+            school_id=school_id,
+            department_id=subject_in.department_id,
+            semester_id=subject_in.semester_id,
+            name=name,
+            code=code,
+            description=subject_in.description,
+            credits=subject_in.credits,
+            faculty_name=subject_in.faculty_name,
+            subject_type=subject_in.subject_type,
+            is_active=subject_in.is_active,
+        )
+        db.add(subject)
+        await db.commit()
+        await db.refresh(subject)
+        return subject
+    except Exception as exc:
+        await db.rollback()
+        if 'duplicate key' in str(exc).lower() or 'unique' in str(exc).lower():
+            raise HTTPException(
+                status_code=400,
+                detail=f"This subject already exists in the selected department and semester. Check the subject name and code before saving."
+            ) from exc
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unable to save subject '{name}'. The selected department/semester may already contain this subject or the submitted data is invalid."
+        ) from exc
 
 @router.get("/{subject_id}/questions", response_model=List[QuestionSchema])
 async def get_subject_questions(

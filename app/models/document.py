@@ -49,7 +49,11 @@ class Document(Base):
     uploaded_by_admin = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     status = Column(String, default="active")
     
+    youtube_url = Column(String, nullable=True, index=True)
+    youtube_video_id = Column(String, nullable=True, index=True)
+    video_title = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     
     # Relationships
     subject = relationship("Subject", back_populates="documents")

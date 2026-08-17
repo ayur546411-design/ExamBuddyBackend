@@ -4,6 +4,8 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import load_only
 from typing import Optional, List
 import json
+import re
+from datetime import datetime
 
 from app.db.session import get_db
 from app.models.document import Document, DocumentTypeEnum
@@ -18,6 +20,48 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def extract_youtube_video_id(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+
+    cleaned = url.strip()
+    if not cleaned:
+        return None
+
+    patterns = [
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([A-Za-z0-9_-]{11})',
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([A-Za-z0-9_-]{11})',
+        r'(?:https?:\/\/)?(?:www\.)?youtu\.be\/([A-Za-z0-9_-]{11})',
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/shorts\/([A-Za-z0-9_-]{11})',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, cleaned, re.IGNORECASE)
+        if match:
+            return match.group(1)
+
+    if cleaned.startswith('https://') and 'youtube.com' in cleaned.lower():
+        raise HTTPException(status_code=400, detail='Invalid YouTube URL. Use a standard watch, embed, short, or youtu.be link.')
+
+    return None
+
+
+def normalize_youtube_fields(url: Optional[str], title: Optional[str] = None) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    if url is None:
+        return None, None, title.strip() if isinstance(title, str) and title.strip() else None
+
+    cleaned = url.strip()
+    if not cleaned:
+        return None, None, title.strip() if isinstance(title, str) and title.strip() else None
+
+    video_id = extract_youtube_video_id(cleaned)
+    if not video_id:
+        raise HTTPException(status_code=400, detail='Invalid YouTube URL. Please provide a valid YouTube watch/embed/short link.')
+
+    return cleaned, video_id, title.strip() if isinstance(title, str) and title.strip() else None
+
 
 def is_admin_user(user: User) -> bool:
     role_value = getattr(user, 'role', None)
@@ -90,10 +134,14 @@ async def get_documents(
             Document.semester_id,
             Document.subject_id,
             Document.uploaded_by_admin,
+            Document.youtube_url,
+            Document.youtube_video_id,
+            Document.video_title,
             Document.created_at,
+            Document.updated_at,
             Document.structured_json,
-            Document.metadata_json,    # Required: schema includes this, omitting causes MissingGreenlet
-            Document.extracted_text,   # Required: schema includes this, omitting causes MissingGreenlet
+            Document.metadata_json,
+            Document.extracted_text,
         ))
     )
 
@@ -180,6 +228,32 @@ async def update_document(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
+    if document_in.youtube_url is not None:
+        if document_in.youtube_url.strip() == "":
+            document.youtube_url = None
+            document.youtube_video_id = None
+            document.video_title = document_in.video_title.strip() if document_in.video_title and document_in.video_title.strip() else None
+        else:
+            normalized_url, video_id, title_value = normalize_youtube_fields(document_in.youtube_url, document_in.video_title)
+            document.youtube_url = normalized_url
+            document.youtube_video_id = video_id
+            document.video_title = title_value or document.video_title
+
+    if document_in.video_title is not None and document_in.youtube_url is None:
+        if document_in.video_title.strip() == "":
+            document.video_title = None
+        elif document.youtube_url:
+            document.video_title = document_in.video_title.strip()
+
+    if document.youtube_url:
+        document.metadata_json = {
+            **(document.metadata_json or {}),
+            "pyq_id": document.id,
+            "youtube_url": document.youtube_url,
+            "youtube_video_id": document.youtube_video_id,
+            "video_title": document.video_title,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
     updatable_fields = [
         "title",
         "description",
@@ -296,6 +370,12 @@ async def upload_document(
 
         if document_type == DocumentTypeEnum.pyq and not cloudinary_url and not pdf_url and not youtube_url:
             raise HTTPException(status_code=400, detail="PYQ uploads require a PDF/image file, a direct pdf_url, or a YouTube video URL")
+
+        normalized_youtube_url = None
+        normalized_youtube_video_id = None
+        normalized_video_title = None
+        if youtube_url:
+            normalized_youtube_url, normalized_youtube_video_id, normalized_video_title = normalize_youtube_fields(youtube_url, video_title)
         
         # 2. Extract text only for non-PYQ documents; PYQ uploads are stored as direct PDF/video references.
         pdf_text = None
@@ -480,29 +560,58 @@ async def upload_document(
                 # 2. Dynamic Subject Parsing & Creation
                 entity_subject_id = subject_id
                 subject_name = entity.get("Subject Name")
-                subject_code = entity.get("Subject Code", "")
+                subject_code = (entity.get("Subject Code") or '').strip()
                 
                 if subject_name and entity_semester_id:
-                    # Find or Create Subject matching the specific semester, department, and school exactly
-                    # This prevents linking a subject of the same name to the wrong semester.
-                    subj_query = await db.execute(
-                        select(Subject).where(
-                            Subject.school_id == school_id,
-                            Subject.department_id == department_id,
-                            Subject.semester_id == entity_semester_id,
-                            Subject.name.ilike(subject_name)
+                    normalized_name = str(subject_name).strip()
+                    normalized_code = subject_code
+                    candidate_identifiers = []
+                    if normalized_code:
+                        candidate_identifiers.append(("code", normalized_code.lower()))
+                    candidate_identifiers.append(("name", normalized_name.lower()))
+
+                    matching_subject = None
+                    for field_name, field_value in candidate_identifiers:
+                        if not field_value:
+                            continue
+                        subj_query = await db.execute(
+                            select(Subject).where(
+                                Subject.is_active == True,
+                                Subject.school_id == school_id,
+                                Subject.department_id == department_id,
+                                Subject.semester_id == entity_semester_id,
+                                ((Subject.code.ilike(normalized_code)) if field_name == 'code' and normalized_code else Subject.name.ilike(normalized_name))
+                            )
                         )
-                    )
-                    found_subj = subj_query.scalars().first()
-                    
-                    if found_subj:
-                        entity_subject_id = found_subj.id
-                        # If found, update its code if it was auto-generated previously and we now have a real one
-                        if subject_code and found_subj.code.startswith("AUTO-"):
-                            found_subj.code = subject_code
-                            db.add(found_subj)
-                            await db.commit()
-                            logger.info(f"[Upload API] Updated subject code for '{subject_name}' to '{subject_code}'")
+                        matching_subject = subj_query.scalars().first()
+                        if matching_subject:
+                            break
+
+                    if not matching_subject:
+                        code_lookup = await db.execute(
+                            select(Subject).where(
+                                Subject.is_active == True,
+                                Subject.code == normalized_code,
+                            )
+                        )
+                        matching_subject = code_lookup.scalars().first() if normalized_code else None
+
+                    if matching_subject:
+                        entity_subject_id = matching_subject.id
+                        have_real_code = bool(normalized_code)
+                        if have_real_code and (not matching_subject.code or matching_subject.code.startswith('AUTO-')):
+                            matching_subject.code = normalized_code
+                        if not matching_subject.name:
+                            matching_subject.name = normalized_name
+                        if not matching_subject.school_id:
+                            matching_subject.school_id = school_id
+                        if not matching_subject.department_id:
+                            matching_subject.department_id = department_id
+                        if not matching_subject.semester_id:
+                            matching_subject.semester_id = entity_semester_id
+                        db.add(matching_subject)
+                        await db.commit()
+                        logger.info(f"[Upload API] Reused existing subject '{matching_subject.name}' for dept {department_id[:8]} / sem {entity_semester_id[:8]}")
                     else:
                         import uuid
                         new_subj = Subject(
@@ -510,15 +619,15 @@ async def upload_document(
                             school_id=school_id,
                             department_id=department_id,
                             semester_id=entity_semester_id,
-                            name=subject_name,
-                            code=subject_code if subject_code else f"AUTO-{str(uuid.uuid4())[:4]}",
+                            name=normalized_name,
+                            code=normalized_code or f"AUTO-{str(uuid.uuid4())[:4]}",
                             credits=entity.get("Credits", 0) or 0
                         )
                         db.add(new_subj)
                         await db.commit()
                         await db.refresh(new_subj)
                         entity_subject_id = new_subj.id
-                        logger.info(f"[Upload API] Auto-created Subject '{subject_name}' for semester {entity_semester_id}")
+                        logger.info(f"[Upload API] Auto-created Subject '{normalized_name}' for semester {entity_semester_id}")
                 
                 # 3. Document Creation
                 # Infer title based on doc type
@@ -539,7 +648,7 @@ async def upload_document(
                 
                 new_doc = Document(
                     document_type=doc_type_enum,
-                    cloudinary_url=cloudinary_url or pdf_url or youtube_url or '',
+                    cloudinary_url=cloudinary_url or pdf_url or normalized_youtube_url or '',
                     cloudinary_public_id=cloudinary_public_id,
                     file_size=file_size,
                     file_type=file_format,
@@ -552,7 +661,10 @@ async def upload_document(
                     school_id=school_id,
                     department_id=department_id,
                     semester_id=entity_semester_id,
-                    subject_id=entity_subject_id
+                    subject_id=entity_subject_id,
+                    youtube_url=normalized_youtube_url,
+                    youtube_video_id=normalized_youtube_video_id,
+                    video_title=normalized_video_title,
                 )
                 if doc_type_enum == DocumentTypeEnum.pyq:
                     normalized_exam_type = (exam_type or '').strip().lower() if exam_type else None
@@ -560,14 +672,16 @@ async def upload_document(
                         **(new_doc.metadata_json or {}),
                         "exam_type": normalized_exam_type,
                         "pdf_url": pdf_url,
-                        "youtube_url": youtube_url,
-                        "video_title": video_title,
+                        "youtube_url": normalized_youtube_url,
+                        "youtube_video_id": normalized_youtube_video_id,
+                        "video_title": normalized_video_title,
                     }
                     new_doc.structured_json = {
                         "exam_type": normalized_exam_type,
                         "pdf_url": pdf_url,
-                        "youtube_url": youtube_url,
-                        "video_title": video_title,
+                        "youtube_url": normalized_youtube_url,
+                        "youtube_video_id": normalized_youtube_video_id,
+                        "video_title": normalized_video_title,
                     }
                 db.add(new_doc)
                 await db.commit() # Commit individually to ensure foreign keys are saved

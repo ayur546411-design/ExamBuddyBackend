@@ -20,6 +20,7 @@ class DocumentBase(BaseModel):
     exam_type: Optional[str] = None
     pdf_url: Optional[str] = None
     youtube_url: Optional[str] = None
+    youtube_video_id: Optional[str] = None
     video_title: Optional[str] = None
 
 class Document(DocumentBase):
@@ -30,6 +31,7 @@ class Document(DocumentBase):
     subject_id: Optional[str] = None
     uploaded_by_admin: Optional[str] = None
     created_at: datetime
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -47,6 +49,7 @@ class DocumentUpdate(BaseModel):
     exam_type: Optional[str] = None
     pdf_url: Optional[str] = None
     youtube_url: Optional[str] = None
+    youtube_video_id: Optional[str] = None
     video_title: Optional[str] = None
 
 class QuestionSchema(BaseModel):
