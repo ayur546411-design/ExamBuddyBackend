@@ -89,6 +89,18 @@ async def get_subjects(
     logger.info("[Subjects] ---- REQUEST END ----")
     return subjects
 
+@router.get("/{subject_id}", response_model=SubjectSchema)
+async def get_subject(
+    subject_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Retrieve details for a single subject by ID."""
+    subject = await db.get(Subject, subject_id)
+    if not subject:
+        raise HTTPException(status_code=404, detail="Subject not found")
+    return subject
+
 @router.put("/{subject_id}", response_model=SubjectSchema)
 async def update_subject(
     subject_id: str,
@@ -349,3 +361,46 @@ async def get_subject_questions(
     
     logger.info(f"[Subjects API] Returning {len(final_questions)} questions for subject {subject_id} from {len(documents)} documents")
     return final_questions
+
+@router.delete("/{subject_id}")
+async def delete_subject(
+    subject_id: str,
+    confirm: bool = False,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Delete a subject.
+    If confirm is False and there are associated documents, returns a warning and list of documents.
+    If confirm is True, deletes the subject (cascade delete will automatically delete documents).
+    """
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Only admins can delete subjects")
+
+    subject = await db.get(Subject, subject_id)
+    if not subject:
+        raise HTTPException(status_code=404, detail="Subject not found")
+
+    # Get associated documents
+    doc_query = await db.execute(
+        select(Document).where(Document.subject_id == subject_id)
+    )
+    documents = doc_query.scalars().all()
+    doc_count = len(documents)
+
+    if doc_count > 0 and not confirm:
+        return {
+            "status": "warning",
+            "message": f"Subject '{subject.name}' has {doc_count} associated document(s) (syllabus, notes, or PYQs).",
+            "doc_count": doc_count,
+            "documents": [{"id": d.id, "title": d.title, "type": d.document_type} for d in documents]
+        }
+
+    try:
+        await db.delete(subject)
+        await db.commit()
+        return {"status": "success", "message": f"Subject '{subject.name}' and its {doc_count} associated documents deleted successfully."}
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete subject: {str(e)}")
+

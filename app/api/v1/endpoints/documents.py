@@ -322,11 +322,15 @@ async def upload_document(
         if not semester.scalar_one_or_none():
             semester_id = None # Just ignore if invalid
             
+    # FIX 1: Sanitize empty-string subject_id (admin form sends "" when blank)
+    subject_id = subject_id.strip() if subject_id else None
+
     if subject_id:
         from app.models.subject import Subject
         subject = await db.execute(select(Subject).where(Subject.id == subject_id))
         if not subject.scalar_one_or_none():
-            subject_id = None # Just ignore if invalid
+            logger.warning(f"[Upload API] subject_id '{subject_id}' not found in DB — ignoring")
+            subject_id = None  # Ignore invalid ID
             
     doc_type_enum = document_type
 
@@ -630,8 +634,21 @@ async def upload_document(
                         logger.info(f"[Upload API] Auto-created Subject '{normalized_name}' for semester {entity_semester_id}")
                 
                 # 3. Document Creation
+                # FIX 2: Guard — skip saving a syllabus with no resolved subject (broken PDF)
+                if doc_type_enum == DocumentTypeEnum.syllabus and not entity_subject_id:
+                    logger.error(
+                        f"[Upload API] Skipping syllabus entity — could not resolve subject_id. "
+                        f"This usually means the PDF is a scanned image with no extractable text. "
+                        f"Entity Subject Name='{entity.get('Subject Name', '?')}' | "
+                        f"Please re-upload as a text-based PDF or manually select a subject."
+                    )
+                    skipped_count += 1
+                    continue
+
+                # FIX 3: Guard against file.filename crash when file=None (pdf_url/youtube upload path)
                 # Infer title based on doc type
-                title = file.filename
+                safe_filename = (file.filename if file and file.filename else None)
+                title = safe_filename or 'Untitled'
                 if doc_type_enum == DocumentTypeEnum.syllabus and entity.get("Subject Name"):
                     title = f"{entity['Subject Name']} {doc_type_enum.value.capitalize()}"
                 elif doc_type_enum == DocumentTypeEnum.pyq and entity.get("Subject Name"):
@@ -891,3 +908,26 @@ async def repair_semester_assignments(
     logger.info(f"[Repair] Fixed {fixed} semester mismatches")
 
     return report
+
+@router.delete("/{document_id}")
+async def delete_document(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Delete a document by its ID."""
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Only admins can delete documents")
+
+    doc = await db.get(Document, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    try:
+        await db.delete(doc)
+        await db.commit()
+        return {"status": "success", "message": "Document deleted successfully"}
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete document: {str(e)}")
+
