@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import List, Optional
 from datetime import datetime
 from app.models.subject import SubjectTypeEnum
 
@@ -38,3 +38,18 @@ class SubjectUpdate(BaseModel):
     school_id: Optional[str] = None
     department_id: Optional[str] = None
     semester_id: Optional[str] = None
+
+class SubjectCopyDestination(BaseModel):
+    department_id: str
+    semester_id: str
+
+class SubjectBulkCopy(BaseModel):
+    source_subject_ids: List[str]
+    destinations: List[SubjectCopyDestination]
+    copy_topics: bool = True
+    copy_description: bool = True
+    copy_credits: bool = True
+    copy_pdf: bool = False
+    copy_notes: bool = False
+    copy_pyqs: bool = False
+    copy_youtube: bool = False

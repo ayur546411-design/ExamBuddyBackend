@@ -18,7 +18,7 @@ class Subject(Base):
     semester_id = Column(String, ForeignKey("semesters.id", ondelete="CASCADE"), nullable=False, index=True)
     
     name = Column(String, index=True, nullable=False)
-    code = Column(String, unique=True, index=True, nullable=True) # E.g., CS401
+    code = Column(String, index=True, nullable=True) # E.g., CS401; unique within a department/semester
     description = Column(String, nullable=True)
     credits = Column(Integer, nullable=True)
     faculty_name = Column(String, nullable=True)

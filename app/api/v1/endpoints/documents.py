@@ -148,6 +148,8 @@ async def get_documents(
     if status:
         query = query.where(Document.status == status)
         logger.info(f"[Documents] filter: status = {status}")
+    elif not is_admin_user(current_user):
+        query = query.where(Document.status == "active")
 
     if subject_id:
         # subject_id is the tightest scope — no dept filter needed
@@ -291,7 +293,8 @@ async def upload_document(
     pdf_url: Optional[str] = Form(None),
     youtube_url: Optional[str] = Form(None),
     video_title: Optional[str] = Form(None),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Upload a PDF, extract text, process with Gemini, and save to DB.
@@ -682,6 +685,7 @@ async def upload_document(
                     youtube_url=normalized_youtube_url,
                     youtube_video_id=normalized_youtube_video_id,
                     video_title=normalized_video_title,
+                    status="draft",
                 )
                 if doc_type_enum == DocumentTypeEnum.pyq:
                     normalized_exam_type = (exam_type or '').strip().lower() if exam_type else None

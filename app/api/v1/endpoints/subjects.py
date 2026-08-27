@@ -7,7 +7,7 @@ from app.db.session import get_db
 from app.models.department import Department
 from app.models.semester import Semester
 from app.models.subject import Subject
-from app.schemas.subject import Subject as SubjectSchema, SubjectCreate, SubjectUpdate
+from app.schemas.subject import Subject as SubjectSchema, SubjectCreate, SubjectUpdate, SubjectBulkCopy
 from app.models.user import User, UserRoleEnum
 from app.models.document import Document, DocumentTypeEnum
 from app.schemas.document import QuestionSchema
@@ -219,17 +219,20 @@ async def create_subject(
             await db.refresh(existing)
             return existing
 
-    global_code_match = await db.execute(
+    destination_code_match = await db.execute(
         select(Subject).where(
             Subject.is_active == True,
+            Subject.school_id == school_id,
+            Subject.department_id == subject_in.department_id,
+            Subject.semester_id == subject_in.semester_id,
             Subject.code == code,
         )
     )
-    global_code_subject = global_code_match.scalars().first()
-    if global_code_subject and global_code_subject.id != (locals().get('existing', None) and existing.id):
+    destination_code_subject = destination_code_match.scalars().first()
+    if destination_code_subject:
         raise HTTPException(
             status_code=400,
-            detail=f"Subject code '{code}' already exists for another department/semester. Use a unique code or update the existing subject."
+            detail=f"Subject code '{code}' already exists in the selected department and semester."
         )
 
     try:
@@ -260,6 +263,114 @@ async def create_subject(
             status_code=400,
             detail=f"Unable to save subject '{name}'. The selected department/semester may already contain this subject or the submitted data is invalid."
         ) from exc
+
+@router.post("/bulk-copy", response_model=List[SubjectSchema], status_code=status.HTTP_201_CREATED)
+async def bulk_copy_subjects(
+    copy_in: SubjectBulkCopy,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Copy subject metadata to one or more department/semester destinations atomically."""
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Only admins can copy subjects")
+    if not copy_in.source_subject_ids or not copy_in.destinations:
+        raise HTTPException(status_code=400, detail="Select at least one subject and destination")
+
+    source_ids = list(dict.fromkeys(copy_in.source_subject_ids))
+    destinations = list({(item.department_id, item.semester_id): item for item in copy_in.destinations}.values())
+    source_result = await db.execute(select(Subject).where(Subject.id.in_(source_ids), Subject.is_active == True))
+    sources = source_result.scalars().all()
+    source_by_id = {subject.id: subject for subject in sources}
+    if len(source_by_id) != len(source_ids):
+        raise HTTPException(status_code=404, detail="One or more source subjects were not found")
+
+    destination_rows = []
+    for destination in destinations:
+        department = await db.get(Department, destination.department_id)
+        semester = await db.get(Semester, destination.semester_id)
+        if not department or not department.is_active:
+            raise HTTPException(status_code=404, detail=f"Department not found: {destination.department_id}")
+        if not semester or not semester.is_active or semester.department_id != department.id:
+            raise HTTPException(status_code=400, detail=f"Semester does not belong to department '{department.name}'")
+        destination_rows.append((department, semester))
+
+    planned = []
+    planned_documents = []
+    for source_id in source_ids:
+        source = source_by_id[source_id]
+        for department, semester in destination_rows:
+            if source.department_id == department.id and source.semester_id == semester.id:
+                raise HTTPException(status_code=400, detail=f"'{source.name}' is already in the selected destination")
+            existing_result = await db.execute(select(Subject).where(
+                Subject.is_active == True,
+                Subject.school_id == department.school_id,
+                Subject.department_id == department.id,
+                Subject.semester_id == semester.id,
+                (Subject.name == source.name) | (Subject.code == source.code),
+            ))
+            if existing_result.scalars().first():
+                raise HTTPException(status_code=409, detail=f"'{source.name}' or code '{source.code}' already exists in {department.name}, Semester {semester.semester_number}")
+            planned.append(Subject(
+                id=str(uuid.uuid4()),
+                school_id=department.school_id,
+                department_id=department.id,
+                semester_id=semester.id,
+                name=source.name,
+                code=source.code,
+                description=source.description if copy_in.copy_description else None,
+                credits=source.credits if copy_in.copy_credits else None,
+                faculty_name=source.faculty_name,
+                subject_type=source.subject_type,
+                is_active=True,
+            ))
+
+            document_result = await db.execute(select(Document).where(Document.subject_id == source.id))
+            for document in document_result.scalars().all():
+                should_copy = (
+                    (document.document_type == DocumentTypeEnum.syllabus and (copy_in.copy_topics or copy_in.copy_pdf))
+                    or (document.document_type == DocumentTypeEnum.note and copy_in.copy_notes)
+                    or (document.document_type == DocumentTypeEnum.pyq and copy_in.copy_pyqs)
+                )
+                if not should_copy:
+                    continue
+                planned_documents.append((document, planned[-1], department, semester))
+
+    try:
+        db.add_all(planned)
+        for source_document, target_subject, department, semester in planned_documents:
+            copied_document = Document(
+                id=str(uuid.uuid4()),
+                school_id=department.school_id,
+                department_id=department.id,
+                semester_id=semester.id,
+                subject_id=target_subject.id,
+                document_type=source_document.document_type,
+                academic_year=source_document.academic_year,
+                cloudinary_url=source_document.cloudinary_url,
+                cloudinary_public_id=source_document.cloudinary_public_id,
+                thumbnail_url=source_document.thumbnail_url,
+                file_size=source_document.file_size,
+                file_type=source_document.file_type,
+                title=source_document.title,
+                description=source_document.description,
+                keywords=source_document.keywords,
+                metadata_json=source_document.metadata_json if copy_in.copy_topics else None,
+                extracted_text=source_document.extracted_text if copy_in.copy_topics else None,
+                structured_json=source_document.structured_json if copy_in.copy_topics else None,
+                uploaded_by_admin=current_user.id,
+                status='draft',
+                youtube_url=source_document.youtube_url if copy_in.copy_youtube else None,
+                youtube_video_id=source_document.youtube_video_id if copy_in.copy_youtube else None,
+                video_title=source_document.video_title if copy_in.copy_youtube else None,
+            )
+            db.add(copied_document)
+        await db.commit()
+        for subject in planned:
+            await db.refresh(subject)
+        return planned
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail="Unable to copy subjects. No subjects were created.") from exc
 
 @router.get("/{subject_id}/questions", response_model=List[QuestionSchema])
 async def get_subject_questions(
