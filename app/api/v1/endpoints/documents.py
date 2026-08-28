@@ -181,6 +181,24 @@ async def get_documents(
     result = await db.execute(query)
     documents = result.scalars().all()
 
+    # Repair-compatible lookup for older syllabus uploads that were saved
+    # before subject_id was reliably attached by the upload form.
+    if subject_id and not documents:
+        from app.models.subject import Subject
+        selected_subject = await db.get(Subject, subject_id)
+        if selected_subject:
+            legacy_query = select(Document).where(
+                Document.document_type == DocumentTypeEnum.syllabus,
+                Document.status == "active",
+                Document.department_id == selected_subject.department_id,
+                Document.semester_id == selected_subject.semester_id,
+                Document.title.ilike(f"%{selected_subject.name}%"),
+            ).order_by(Document.created_at.desc())
+            legacy_result = await db.execute(legacy_query)
+            documents = legacy_result.scalars().all()
+            if documents:
+                logger.warning("[Documents] Matched legacy syllabus by department, semester, and subject name")
+
     elapsed = round((time.perf_counter() - t0) * 1000, 2)
     logger.info(f"[Documents] RESULT: {len(documents)} document(s) returned in {elapsed}ms page={page} page_size={page_size}")
     if len(documents) == 0:
