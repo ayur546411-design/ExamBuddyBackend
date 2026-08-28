@@ -6,6 +6,7 @@ from typing import List, Optional
 from app.db.session import get_db
 from app.models.department import Department
 from app.models.semester import Semester
+from app.models.subject import Subject
 from app.schemas.semester import Semester as SemesterSchema, SemesterCreate
 from app.models.user import User, UserRoleEnum
 from app.api.v1.endpoints.users import get_current_user
@@ -95,3 +96,36 @@ async def create_semester(
     await db.commit()
     await db.refresh(semester)
     return semester
+
+@router.delete("/{semester_id}")
+async def delete_semester(
+    semester_id: str,
+    confirm: bool = False,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a semester after explicitly confirming its subjects will be removed."""
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Only admins can delete semesters")
+
+    semester = await db.get(Semester, semester_id)
+    if not semester:
+        raise HTTPException(status_code=404, detail="Semester not found")
+
+    subject_result = await db.execute(select(Subject).where(Subject.semester_id == semester_id, Subject.is_active == True))
+    subjects = subject_result.scalars().all()
+    if subjects and not confirm:
+        return {
+            "status": "warning",
+            "message": f"Semester {semester.semester_number} contains {len(subjects)} subject(s).",
+            "subject_count": len(subjects),
+            "subjects": [{"id": subject.id, "name": subject.name, "code": subject.code} for subject in subjects],
+        }
+
+    try:
+        await db.delete(semester)
+        await db.commit()
+        return {"status": "success", "message": f"Semester {semester.semester_number} deleted successfully."}
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete semester: {exc}")
