@@ -183,7 +183,7 @@ async def get_documents(
 
     # Repair-compatible lookup for older syllabus uploads that were saved
     # before subject_id was reliably attached by the upload form.
-    if subject_id and not documents:
+    if subject_id and document_type == DocumentTypeEnum.syllabus:
         from app.models.subject import Subject
         selected_subject = await db.get(Subject, subject_id)
         if selected_subject:
@@ -195,13 +195,24 @@ async def get_documents(
             ).order_by(Document.created_at.desc())
             legacy_result = await db.execute(legacy_query)
             legacy_documents = legacy_result.scalars().all()
-            subject_tokens = ''.join(character.lower() for character in selected_subject.name if character.isalnum())
-            subject_code = (selected_subject.code or '').lower().replace('-', '').replace(' ', '')
-            documents = [document for document in legacy_documents if (
-                subject_tokens in ''.join(character.lower() for character in (document.title or '') if character.isalnum())
-                or (subject_code and subject_code in (document.title or '').lower().replace('-', '').replace(' ', ''))
-            )]
-            if documents:
+            def normalize_subject(value):
+                normalized = re.sub(r'\bsyllabus\b|\bdepartment\b', ' ', str(value or '').lower())
+                normalized = normalized.replace('&', ' and ')
+                return re.sub(r'[^a-z0-9]+', ' ', normalized).strip()
+
+            subject_name = normalize_subject(selected_subject.name)
+            subject_code = normalize_subject(selected_subject.code)
+            matched_legacy = []
+            for document in legacy_documents:
+                payload = document.structured_json if isinstance(document.structured_json, dict) else {}
+                candidates = [document.title, payload.get('Subject Name'), payload.get('subject_name'), payload.get('Subject Code'), payload.get('subject_code')]
+                normalized_candidates = [normalize_subject(candidate) for candidate in candidates]
+                if any(subject_name and subject_name in candidate for candidate in normalized_candidates) or any(subject_code and subject_code == candidate for candidate in normalized_candidates):
+                    matched_legacy.append(document)
+
+            known_ids = {document.id for document in documents}
+            documents.extend(document for document in matched_legacy if document.id not in known_ids)
+            if matched_legacy:
                 logger.warning("[Documents] Matched legacy syllabus by department, semester, and subject name")
 
     if document_type == DocumentTypeEnum.syllabus:
