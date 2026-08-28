@@ -441,6 +441,7 @@ async def upload_document(
 
         inserted_count = 0
         skipped_count = 0
+        inserted_document_ids = []
         
         # ── Post-processing: Propagate semesters from neighbours ────────────────────────
         # University PDFs often have ONE semester header for a SECTION of subjects.
@@ -711,6 +712,8 @@ async def upload_document(
                     }
                 db.add(new_doc)
                 await db.commit() # Commit individually to ensure foreign keys are saved
+                await db.refresh(new_doc)
+                inserted_document_ids.append(new_doc.id)
                 inserted_count += 1
             except Exception as e:
                 # If an entity fails, rollback the transaction state so the loop can continue
@@ -737,6 +740,7 @@ async def upload_document(
             "message": "Document processed and saved to database successfully",
             "validation_report": validation_report,
             "inserted_entities": inserted_count,
+            "document_ids": inserted_document_ids,
             "skipped_entities": skipped_count,
             "cloudinary_url": cloudinary_url,
             "structured_json": structured_data
