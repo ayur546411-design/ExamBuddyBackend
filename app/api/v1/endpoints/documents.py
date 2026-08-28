@@ -6,6 +6,7 @@ from typing import Optional, List
 import json
 import re
 from datetime import datetime
+from pydantic import BaseModel
 
 from app.db.session import get_db
 from app.models.document import Document, DocumentTypeEnum
@@ -20,6 +21,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+class WorkspaceSyllabusCreate(BaseModel):
+    subject_id: str
+    structured_json: dict
+    status: str = "active"
 
 
 def extract_youtube_video_id(url: Optional[str]) -> Optional[str]:
@@ -230,6 +236,38 @@ async def get_documents(
         logger.warning(f"[Documents] EMPTY RESULT — subject_id={subject_id} dept={current_user.department_id} type={document_type}")
     logger.info("[Documents] ---- REQUEST END ----")
     return documents
+
+@router.post("/workspace-syllabus", response_model=DocumentSchema, status_code=201)
+async def create_workspace_syllabus(
+    syllabus_in: WorkspaceSyllabusCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create a syllabus document from the inline admin workspace editor."""
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Only admins can create syllabus content")
+
+    from app.models.subject import Subject
+    subject = await db.get(Subject, syllabus_in.subject_id)
+    if not subject or not subject.is_active:
+        raise HTTPException(status_code=404, detail="Subject not found")
+
+    document = Document(
+        document_type=DocumentTypeEnum.syllabus,
+        cloudinary_url="",
+        title=f"{subject.name} Syllabus",
+        description=subject.description or "",
+        structured_json=syllabus_in.structured_json,
+        school_id=subject.school_id,
+        department_id=subject.department_id,
+        semester_id=subject.semester_id,
+        subject_id=subject.id,
+        status=syllabus_in.status,
+    )
+    db.add(document)
+    await db.commit()
+    await db.refresh(document)
+    return document
 
 @router.get("/{document_id}", response_model=DocumentSchema)
 async def get_document(
