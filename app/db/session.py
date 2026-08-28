@@ -7,8 +7,11 @@ engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
     future=True,
-    pool_size=20,
-    max_overflow=10,
+    # Render runs multiple workers against Supabase's limited session pool.
+    # Keep the aggregate connection count bounded across all workers.
+    pool_size=2,
+    max_overflow=0,
+    pool_pre_ping=True,
 )
 
 AsyncSessionLocal = async_sessionmaker(
