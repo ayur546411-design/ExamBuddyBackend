@@ -204,6 +204,15 @@ async def get_documents(
             if documents:
                 logger.warning("[Documents] Matched legacy syllabus by department, semester, and subject name")
 
+    if document_type == DocumentTypeEnum.syllabus:
+        def syllabus_quality(document):
+            payload = document.structured_json if isinstance(document.structured_json, dict) else {}
+            units = payload.get("Units") or payload.get("units") or []
+            topic_count = sum(len(unit.get("Topics") or unit.get("topics") or []) for unit in units if isinstance(unit, dict)) if isinstance(units, list) else 0
+            return (len(units) if isinstance(units, list) else 0, topic_count, len(document.extracted_text or ""), document.created_at)
+
+        documents = sorted(documents, key=syllabus_quality, reverse=True)
+
     elapsed = round((time.perf_counter() - t0) * 1000, 2)
     logger.info(f"[Documents] RESULT: {len(documents)} document(s) returned in {elapsed}ms page={page} page_size={page_size}")
     if len(documents) == 0:
