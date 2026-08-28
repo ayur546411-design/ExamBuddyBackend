@@ -149,7 +149,7 @@ async def get_documents(
         query = query.where(Document.status == status)
         logger.info(f"[Documents] filter: status = {status}")
     elif not is_admin_user(current_user):
-        query = query.where(Document.status == "active")
+        query = query.where(Document.status.in_(["active", "published"]))
 
     if subject_id:
         # subject_id is the tightest scope — no dept filter needed
@@ -189,13 +189,18 @@ async def get_documents(
         if selected_subject:
             legacy_query = select(Document).where(
                 Document.document_type == DocumentTypeEnum.syllabus,
-                Document.status == "active",
+                Document.status.in_(["active", "published"]),
                 Document.department_id == selected_subject.department_id,
                 Document.semester_id == selected_subject.semester_id,
-                Document.title.ilike(f"%{selected_subject.name}%"),
             ).order_by(Document.created_at.desc())
             legacy_result = await db.execute(legacy_query)
-            documents = legacy_result.scalars().all()
+            legacy_documents = legacy_result.scalars().all()
+            subject_tokens = ''.join(character.lower() for character in selected_subject.name if character.isalnum())
+            subject_code = (selected_subject.code or '').lower().replace('-', '').replace(' ', '')
+            documents = [document for document in legacy_documents if (
+                subject_tokens in ''.join(character.lower() for character in (document.title or '') if character.isalnum())
+                or (subject_code and subject_code in (document.title or '').lower().replace('-', '').replace(' ', ''))
+            )]
             if documents:
                 logger.warning("[Documents] Matched legacy syllabus by department, semester, and subject name")
 
