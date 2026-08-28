@@ -691,7 +691,9 @@ async def upload_document(
                     youtube_url=normalized_youtube_url,
                     youtube_video_id=normalized_youtube_video_id,
                     video_title=normalized_video_title,
-                    status="draft",
+                    # A manually selected syllabus is ready for the student app
+                    # after upload. Other document types remain in review.
+                    status="active" if doc_type_enum == DocumentTypeEnum.syllabus and subject_id else "draft",
                 )
                 if doc_type_enum == DocumentTypeEnum.pyq:
                     normalized_exam_type = (exam_type or '').strip().lower() if exam_type else None
