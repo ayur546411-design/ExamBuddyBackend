@@ -330,10 +330,15 @@ async def upload_document(
 
     if subject_id:
         from app.models.subject import Subject
-        subject = await db.execute(select(Subject).where(Subject.id == subject_id))
-        if not subject.scalar_one_or_none():
+        subject_result = await db.execute(select(Subject).where(Subject.id == subject_id))
+        selected_subject = subject_result.scalar_one_or_none()
+        if not selected_subject:
             logger.warning(f"[Upload API] subject_id '{subject_id}' not found in DB — ignoring")
             subject_id = None  # Ignore invalid ID
+        elif selected_subject.department_id != department_id:
+            raise HTTPException(status_code=400, detail="Selected subject does not belong to the selected department")
+        elif not semester_id:
+            semester_id = selected_subject.semester_id
             
     doc_type_enum = document_type
 
@@ -569,7 +574,7 @@ async def upload_document(
                 subject_name = entity.get("Subject Name")
                 subject_code = (entity.get("Subject Code") or '').strip()
                 
-                if subject_name and entity_semester_id:
+                if subject_name and entity_semester_id and not subject_id:
                     normalized_name = str(subject_name).strip()
                     normalized_code = subject_code
                     candidate_identifiers = []
