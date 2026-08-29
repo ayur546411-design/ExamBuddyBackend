@@ -1,7 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from typing import List, Optional
+import json
+import base64
 
 from app.db.session import get_db
 from app.models.department import Department
@@ -12,6 +14,8 @@ from app.models.user import User, UserRoleEnum
 from app.models.document import Document, DocumentTypeEnum
 from app.schemas.document import QuestionSchema
 from app.api.v1.endpoints.users import get_current_user
+from app.services.gemini_service import extract_structured_data_from_pdf_text, extract_subject_list_from_text, _normalize_syllabus_payload
+from app.services.pdf_service import extract_text_from_pdf, extract_text_from_pdf_by_pages
 import logging
 import uuid
 
@@ -88,6 +92,100 @@ async def get_subjects(
         logger.warning("[Subjects] EMPTY RESULT - no subjects found for the requested scope")
     logger.info("[Subjects] ---- REQUEST END ----")
     return subjects
+
+@router.post("/ai/extract-syllabus", status_code=200)
+async def ai_extract_syllabus(
+    file: Optional[UploadFile] = File(None),
+    text: Optional[str] = Form(None),
+    department_id: Optional[str] = Form(None),
+    semester_id: Optional[str] = Form(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Extract syllabus JSON from source text or a PDF/image and return it for review."""
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Only admins can use AI syllabus extraction")
+
+    if file is not None:
+        payload = await file.read()
+        mime_type = file.content_type or "application/pdf"
+        if mime_type.startswith("application/pdf") or file.filename.lower().endswith(".pdf"):
+            extracted_text = await extract_text_from_pdf(payload)
+            if not extracted_text.strip():
+                raise HTTPException(status_code=422, detail="No readable text could be extracted from the PDF")
+            structured = await extract_structured_data_from_pdf_text(extracted_text, "syllabus")
+            return {"structured_json": _normalize_syllabus_payload(structured), "source_text": extracted_text}
+        if mime_type.startswith("image/"):
+            image_result = await extract_structured_data_from_pdf_text("", "syllabus")
+            raise HTTPException(status_code=400, detail="Image-based syllabus extraction is not enabled for this backend route yet. Please paste text instead or use the PDF path.")
+
+    if not (text or '').strip():
+        raise HTTPException(status_code=400, detail="Paste syllabus text or upload a PDF before extracting")
+
+    parsed = await extract_subject_list_from_text(text or "")
+    if parsed.get("Subjects"):
+        return {"structured_json": {"Units": []}, "subjects": parsed["Subjects"], "source_text": text}
+
+    result = await extract_structured_data_from_pdf_text(text or "", "syllabus")
+    return {"structured_json": _normalize_syllabus_payload(result), "source_text": text}
+
+
+@router.post("/ai/bulk-create", status_code=201)
+async def ai_bulk_create_subjects(
+    file: Optional[UploadFile] = File(None),
+    text: Optional[str] = Form(None),
+    department_id: str = Form(...),
+    semester_id: str = Form(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Create many subjects from extracted data under the selected department and semester."""
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Only admins can create subjects in bulk")
+
+    department = await db.get(Department, department_id)
+    if not department or not department.is_active:
+        raise HTTPException(status_code=404, detail="Department not found")
+
+    semester = await db.get(Semester, semester_id)
+    if not semester or not semester.is_active or semester.department_id != department_id:
+        raise HTTPException(status_code=404, detail="Semester not found for this department")
+
+    source_text = (text or "").strip()
+    if file is not None:
+        source_bytes = await file.read()
+        source_text = await extract_text_from_pdf(source_bytes) if file.filename.lower().endswith(".pdf") else source_text
+    if not source_text:
+        raise HTTPException(status_code=400, detail="Provide subject text or upload a PDF")
+
+    parsed = await extract_subject_list_from_text(source_text)
+    subjects = parsed.get("Subjects") or []
+    if not subjects:
+        raise HTTPException(status_code=400, detail="Gemini could not detect any valid subjects from the provided text")
+
+    created = []
+    for item in subjects:
+        name = str(item.get("Subject Name") or "").strip()
+        code = str(item.get("Subject Code") or "").strip()
+        credits = item.get("Credits") or 0
+        if not name:
+            continue
+        subject_payload = SubjectCreate(
+            school_id=department.school_id,
+            department_id=department.id,
+            semester_id=semester.id,
+            name=name,
+            code=code or None,
+            description="",
+            credits=int(credits) if isinstance(credits, (int, float)) else 0,
+            faculty_name="",
+            subject_type="theory",
+            is_active=True,
+        )
+        created_subject = await create_subject(subject_payload, db=db, current_user=current_user)
+        created.append(created_subject)
+    return created
+
 
 @router.get("/{subject_id}", response_model=SubjectSchema)
 async def get_subject(

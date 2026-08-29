@@ -543,6 +543,136 @@ async def extract_structured_data_from_pdf_text(pdf_text: str, document_type) ->
 
 # ── AI Answer generation ──────────────────────────────────────────────────────
 
+def _normalize_syllabus_payload(payload: dict | None) -> dict:
+    """Normalize syllabus JSON from Gemini so it matches the app's Units/Topics schema."""
+    if not isinstance(payload, dict):
+        return {"Units": []}
+
+    units = payload.get("Units") or payload.get("units") or []
+    if not isinstance(units, list):
+        units = []
+
+    normalized_units = []
+    for unit in units:
+        if not isinstance(unit, dict):
+            continue
+        topics = unit.get("Topics") or unit.get("topics") or []
+        if not isinstance(topics, list):
+            topics = []
+        normalized_units.append({
+            "Unit Name": unit.get("Unit Name") or unit.get("unit_name") or unit.get("name") or f"Unit {len(normalized_units) + 1}",
+            "Topics": [str(item).strip() for item in topics if str(item).strip()],
+        })
+
+    if not normalized_units and isinstance(payload.get("subjects"), list):
+        for subject in payload["subjects"]:
+            if not isinstance(subject, dict):
+                continue
+            units_list = subject.get("Units") or subject.get("units") or []
+            if isinstance(units_list, list):
+                for unit in units_list:
+                    if isinstance(unit, dict):
+                        normalized_units.append({
+                            "Unit Name": unit.get("Unit Name") or unit.get("unit_name") or unit.get("name") or f"Unit {len(normalized_units) + 1}",
+                            "Topics": [str(item).strip() for item in (unit.get("Topics") or unit.get("topics") or []) if str(item).strip()],
+                        })
+
+    return {
+        **payload,
+        "Units": normalized_units,
+    }
+
+
+async def extract_subject_list_from_text(raw_text: str) -> dict:
+    """Extract a list of subject rows from pasted text or an uploaded PDF/image."""
+    prompt = f"""You are extracting a university subject list. Return ONLY valid JSON.
+
+Rules:
+1. Detect each subject as an object with: Subject Name, Subject Code, Credits.
+2. Credits must be an integer number; if missing, use null.
+3. Deduplicate repeated subjects.
+4. Prefer the source document text; do not invent values.
+5. If no subject names are found, return {{"Subjects": []}}.
+
+JSON FORMAT:
+{{
+  "Subjects": [
+    {{"Subject Name": "", "Subject Code": "", "Credits": 3}}
+  ]
+}}
+
+TEXT:
+{raw_text}
+"""
+    try:
+        response = _client.models.generate_content(
+            model="gemini-flash-lite-latest",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                max_output_tokens=4096,
+            )
+        )
+        parsed = _parse_gemini_response(response.text)
+        if not isinstance(parsed, dict):
+            return {"Subjects": []}
+        subjects = parsed.get("Subjects") or parsed.get("subjects") or []
+        cleaned_items = []
+        for item in subjects:
+            if not isinstance(item, dict):
+                continue
+            cleaned_items.append({
+                "Subject Name": str(item.get("Subject Name") or item.get("subject_name") or "").strip(),
+                "Subject Code": str(item.get("Subject Code") or item.get("subject_code") or "").strip(),
+                "Credits": item.get("Credits") or item.get("credits") or None,
+            })
+        return {"Subjects": [i for i in cleaned_items if i["Subject Name"]]}
+    except Exception as exc:
+        logger.warning(f"[Gemini] Subject list extraction failed: {exc}")
+        return {"Subjects": []}
+
+
+async def extract_syllabus_from_image(file_bytes: bytes, mime_type: str) -> dict:
+    """Extract syllabus from an uploaded image using Gemini vision capability."""
+    prompt = """Extract the syllabus as clean structured data. Return ONLY valid JSON.
+
+Required JSON format:
+{
+  "Subjects": [
+    {
+      "Semester": "number or null",
+      "Subject Name": "exact subject name",
+      "Subject Code": "exact code or null",
+      "Credits": number or null,
+      "Units": [{"Unit Name": "", "Topics": [""]}]
+    }
+  ]
+}
+
+Please be faithful to the original document and preserve names/codes accurately.
+"""
+    try:
+        response = _client.models.generate_content(
+            model="gemini-flash-lite-latest",
+            contents=[
+                types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
+                prompt,
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                max_output_tokens=8192,
+            )
+        )
+        parsed = _parse_gemini_response(response.text)
+        if not isinstance(parsed, dict):
+            return {"Subjects": []}
+        payload = {"Subjects": parsed.get("Subjects") or parsed.get("subjects") or []}
+        return _normalize_syllabus_payload({"Subjects": payload["Subjects"]})
+    except Exception as exc:
+        logger.warning(f"[Gemini] Image syllabus extraction failed: {exc}")
+        return {"error": str(exc), "Subjects": []}
+
+
 async def generate_answer(question_text: str) -> str:
     """Generates an answer for a PYQ question using Gemini."""
     prompt = f"""You are an expert academic tutor for university students.
