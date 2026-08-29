@@ -12,7 +12,7 @@ from app.db.session import get_db
 from app.models.document import Document, DocumentTypeEnum
 from app.schemas.document import Document as DocumentSchema, DocumentUpdate
 from app.services.cloudinary_service import upload_file_to_cloudinary
-from app.services.gemini_service import extract_structured_data_from_pdf_text
+from app.services.gemini_service import extract_structured_data_from_pdf_text, _normalize_syllabus_payload
 from app.services.pdf_service import extract_text_from_pdf, extract_text_from_pdf_by_pages
 from app.api.v1.endpoints.users import get_current_user
 from app.models.user import User, UserRoleEnum
@@ -26,6 +26,12 @@ class WorkspaceSyllabusCreate(BaseModel):
     subject_id: str
     structured_json: dict
     status: str = "active"
+
+
+def normalize_syllabus_document(document: Document):
+    if document.document_type == DocumentTypeEnum.syllabus and isinstance(document.structured_json, dict):
+        from app.services.gemini_service import _normalize_syllabus_payload
+        document.structured_json = _normalize_syllabus_payload(document.structured_json)
 
 
 def extract_youtube_video_id(url: Optional[str]) -> Optional[str]:
@@ -266,6 +272,9 @@ async def get_documents(
                 logger.warning("[Documents] Matched legacy syllabus by department, semester, and subject name")
 
     if document_type == DocumentTypeEnum.syllabus:
+        for document in documents:
+            normalize_syllabus_document(document)
+
         def syllabus_quality(document):
             payload = document.structured_json if isinstance(document.structured_json, dict) else {}
             units = payload.get("Units") or payload.get("units") or []
@@ -333,6 +342,7 @@ async def get_document(
     document = result.scalars().first()
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
+    normalize_syllabus_document(document)
     return document
 
 @router.put("/{document_id}", response_model=DocumentSchema)
@@ -398,6 +408,8 @@ async def update_document(
         if value is not None:
             setattr(document, field, value)
 
+    if document_in.structured_json is not None and document.document_type == DocumentTypeEnum.syllabus:
+        document.structured_json = _normalize_syllabus_payload(document_in.structured_json)
     db.add(document)
     await db.commit()
     await db.refresh(document)

@@ -554,9 +554,15 @@ def _normalize_syllabus_payload(payload: dict | None) -> dict:
         topics = unit.get("Topics") or unit.get("topics") or []
         if not isinstance(topics, list):
             topics = []
+
+        def normalize_topic(topic):
+            if isinstance(topic, dict):
+                return str(topic.get("name") or topic.get("Topic") or topic.get("title") or topic.get("topic") or "").strip()
+            return str(topic).strip()
+
         return {
             "Unit Name": unit.get("Unit Name") or unit.get("unit_name") or unit.get("name") or f"Unit {index + 1}",
-            "Topics": [str(item).strip() for item in topics if str(item).strip()],
+            "Topics": [topic for topic in [normalize_topic(item) for item in topics] if topic],
         }
 
     units = payload.get("Units") or payload.get("units") or []
