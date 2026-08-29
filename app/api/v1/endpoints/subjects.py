@@ -361,6 +361,22 @@ async def create_subject(
         db.add(subject)
         await db.commit()
         await db.refresh(subject)
+
+        # Keep the document workspace in sync with the subject directory.
+        syllabus_document = Document(
+            document_type=DocumentTypeEnum.syllabus,
+            cloudinary_url="",
+            title=f"{subject.name} Syllabus",
+            description=subject.description or "",
+            structured_json={"Units": []},
+            school_id=subject.school_id,
+            department_id=subject.department_id,
+            semester_id=subject.semester_id,
+            subject_id=subject.id,
+            status="draft",
+        )
+        db.add(syllabus_document)
+        await db.commit()
         return subject
     except Exception as exc:
         await db.rollback()

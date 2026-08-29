@@ -180,6 +180,50 @@ async def get_documents(
         query = query.where(Document.semester_id == semester_id)
         logger.info(f"[Documents] filter: semester_id = {semester_id}")
 
+    # Older subjects may have been created before the workspace started
+    # creating their draft syllabus document. Backfill those records when the
+    # admin opens the syllabus document view so existing subjects are visible.
+    if is_admin_user(current_user) and document_type == DocumentTypeEnum.syllabus and not subject_id:
+        from app.models.subject import Subject
+
+        subject_query = select(Subject).where(Subject.is_active == True)
+        if department_id:
+            subject_query = subject_query.where(Subject.department_id == department_id)
+        if semester_id:
+            subject_query = subject_query.where(Subject.semester_id == semester_id)
+        subject_result = await db.execute(subject_query)
+        subjects = subject_result.scalars().all()
+        subject_ids = [subject.id for subject in subjects]
+
+        if subject_ids:
+            existing_result = await db.execute(
+                select(Document.subject_id).where(
+                    Document.document_type == DocumentTypeEnum.syllabus,
+                    Document.subject_id.in_(subject_ids),
+                )
+            )
+            existing_subject_ids = {row[0] for row in existing_result.all()}
+            missing_documents = [
+                Document(
+                    document_type=DocumentTypeEnum.syllabus,
+                    cloudinary_url="",
+                    title=f"{subject.name} Syllabus",
+                    description=subject.description or "",
+                    structured_json={"Units": []},
+                    school_id=subject.school_id,
+                    department_id=subject.department_id,
+                    semester_id=subject.semester_id,
+                    subject_id=subject.id,
+                    status="draft",
+                )
+                for subject in subjects
+                if subject.id not in existing_subject_ids
+            ]
+            if missing_documents:
+                db.add_all(missing_documents)
+                await db.commit()
+                logger.info(f"[Documents] Backfilled {len(missing_documents)} draft syllabus document(s)")
+
     query = query.order_by(Document.created_at.desc())
     # Pagination: allow page_size <= 0 to indicate "no limit" (return all matching rows)
     if page_size and page_size > 0:
