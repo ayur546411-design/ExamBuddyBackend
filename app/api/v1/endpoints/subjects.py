@@ -102,32 +102,44 @@ async def ai_extract_syllabus(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Extract syllabus JSON from source text or a PDF/image and return it for review."""
+    """Extract syllabus JSON from source text, a PDF, or an image and return it for review."""
     if not is_admin_user(current_user):
         raise HTTPException(status_code=403, detail="Only admins can use AI syllabus extraction")
 
+    source_text = (text or '').strip()
+
     if file is not None:
         payload = await file.read()
-        mime_type = file.content_type or "application/pdf"
-        if mime_type.startswith("application/pdf") or file.filename.lower().endswith(".pdf"):
+        mime_type = file.content_type or "application/octet-stream"
+        filename = (file.filename or '').lower()
+        is_pdf = mime_type.startswith("application/pdf") or filename.endswith(".pdf")
+        is_image = mime_type.startswith("image/") or filename.endswith((".png", ".jpg", ".jpeg", ".webp"))
+
+        if is_pdf:
             extracted_text = await extract_text_from_pdf(payload)
             if not extracted_text.strip():
                 raise HTTPException(status_code=422, detail="No readable text could be extracted from the PDF")
             structured = await extract_structured_data_from_pdf_text(extracted_text, "syllabus")
             return {"structured_json": _normalize_syllabus_payload(structured), "source_text": extracted_text}
-        if mime_type.startswith("image/"):
-            image_result = await extract_structured_data_from_pdf_text("", "syllabus")
-            raise HTTPException(status_code=400, detail="Image-based syllabus extraction is not enabled for this backend route yet. Please paste text instead or use the PDF path.")
 
-    if not (text or '').strip():
-        raise HTTPException(status_code=400, detail="Paste syllabus text or upload a PDF before extracting")
+        if is_image:
+            try:
+                from app.services.gemini_service import extract_syllabus_from_image
+                result = await extract_syllabus_from_image(payload, mime_type)
+                structured_json = _normalize_syllabus_payload(result)
+                return {"structured_json": structured_json, "source_text": source_text or "Image upload"}
+            except Exception as exc:
+                logger.warning(f"[AI Syllabus] image extraction failed: {exc}")
+                raise HTTPException(status_code=422, detail="No syllabus content could be read from the uploaded image. Please paste text instead.")
 
-    parsed = await extract_subject_list_from_text(text or "")
-    if parsed.get("Subjects"):
-        return {"structured_json": {"Units": []}, "subjects": parsed["Subjects"], "source_text": text}
+        raise HTTPException(status_code=400, detail="Unsupported file type. Please upload a PDF or image.")
 
-    result = await extract_structured_data_from_pdf_text(text or "", "syllabus")
-    return {"structured_json": _normalize_syllabus_payload(result), "source_text": text}
+    if not source_text:
+        raise HTTPException(status_code=400, detail="Paste syllabus text or upload a PDF/image before extracting")
+
+    result = await extract_structured_data_from_pdf_text(source_text, "syllabus")
+    normalized = _normalize_syllabus_payload(result)
+    return {"structured_json": normalized, "source_text": source_text}
 
 
 @router.post("/ai/bulk-create", status_code=201)

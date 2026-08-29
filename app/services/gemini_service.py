@@ -548,39 +548,51 @@ def _normalize_syllabus_payload(payload: dict | None) -> dict:
     if not isinstance(payload, dict):
         return {"Units": []}
 
+    def normalize_unit(unit, index):
+        if not isinstance(unit, dict):
+            return None
+        topics = unit.get("Topics") or unit.get("topics") or []
+        if not isinstance(topics, list):
+            topics = []
+        return {
+            "Unit Name": unit.get("Unit Name") or unit.get("unit_name") or unit.get("name") or f"Unit {index + 1}",
+            "Topics": [str(item).strip() for item in topics if str(item).strip()],
+        }
+
     units = payload.get("Units") or payload.get("units") or []
     if not isinstance(units, list):
         units = []
 
-    normalized_units = []
-    for unit in units:
-        if not isinstance(unit, dict):
-            continue
-        topics = unit.get("Topics") or unit.get("topics") or []
-        if not isinstance(topics, list):
-            topics = []
-        normalized_units.append({
-            "Unit Name": unit.get("Unit Name") or unit.get("unit_name") or unit.get("name") or f"Unit {len(normalized_units) + 1}",
-            "Topics": [str(item).strip() for item in topics if str(item).strip()],
-        })
+    normalized_units = [normalized for normalized in [normalize_unit(unit, i) for i, unit in enumerate(units)] if normalized is not None]
+
+    if not normalized_units and isinstance(payload.get("Subjects") or payload.get("subjects"), list):
+        subject_rows = payload.get("Subjects") or payload.get("subjects") or []
+        for subject in subject_rows:
+            if not isinstance(subject, dict):
+                continue
+            subject_units = subject.get("Units") or subject.get("units") or []
+            if not isinstance(subject_units, list):
+                continue
+            for i, unit in enumerate(subject_units):
+                normalized = normalize_unit(unit, i)
+                if normalized:
+                    normalized_units.append(normalized)
 
     if not normalized_units and isinstance(payload.get("subjects"), list):
         for subject in payload["subjects"]:
             if not isinstance(subject, dict):
                 continue
             units_list = subject.get("Units") or subject.get("units") or []
-            if isinstance(units_list, list):
-                for unit in units_list:
-                    if isinstance(unit, dict):
-                        normalized_units.append({
-                            "Unit Name": unit.get("Unit Name") or unit.get("unit_name") or unit.get("name") or f"Unit {len(normalized_units) + 1}",
-                            "Topics": [str(item).strip() for item in (unit.get("Topics") or unit.get("topics") or []) if str(item).strip()],
-                        })
+            if not isinstance(units_list, list):
+                continue
+            for i, unit in enumerate(units_list):
+                normalized = normalize_unit(unit, i)
+                if normalized:
+                    normalized_units.append(normalized)
 
-    return {
-        **payload,
-        "Units": normalized_units,
-    }
+    payload_copy = {k: v for k, v in payload.items() if not isinstance(v, (dict, list)) or k not in {"Units", "units", "Subjects", "subjects"}}
+    payload_copy["Units"] = normalized_units
+    return payload_copy
 
 
 async def extract_subject_list_from_text(raw_text: str) -> dict:
