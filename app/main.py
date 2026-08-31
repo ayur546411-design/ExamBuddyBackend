@@ -1,14 +1,65 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 from app.core.config import settings
 from app.core.exceptions import APIException, api_exception_handler, general_exception_handler
+from app.db.session import engine
 import time
 import logging
 import datetime
 
 logger = logging.getLogger(__name__)
 APP_START_TIME = time.time()
+
+async def ensure_feedback_table() -> None:
+    try:
+        async with engine.begin() as conn:
+            table_exists = await conn.execute(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM information_schema.tables
+                        WHERE table_schema = 'public'
+                        AND table_name = 'userfeedback'
+                    );
+                    """
+                )
+            )
+            if not table_exists.scalar():
+                await conn.execute(
+                    text(
+                        """
+                        CREATE TABLE IF NOT EXISTS userfeedback (
+                            id VARCHAR PRIMARY KEY,
+                            user_id VARCHAR NULL,
+                            full_name VARCHAR NOT NULL,
+                            feedback_type VARCHAR NOT NULL DEFAULT 'Suggestion',
+                            message TEXT NOT NULL,
+                            school_id VARCHAR NULL,
+                            department_id VARCHAR NULL,
+                            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                            CONSTRAINT fk_userfeedback_user
+                                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+                        );
+                        """
+                    )
+                )
+                await conn.execute(
+                    text(
+                        """
+                        CREATE INDEX IF NOT EXISTS ix_userfeedback_user_id ON userfeedback (user_id);
+                        CREATE INDEX IF NOT EXISTS ix_userfeedback_full_name ON userfeedback (full_name);
+                        CREATE INDEX IF NOT EXISTS ix_userfeedback_school_id ON userfeedback (school_id);
+                        CREATE INDEX IF NOT EXISTS ix_userfeedback_department_id ON userfeedback (department_id);
+                        """
+                    )
+                )
+                logger.info('[API] Created missing userfeedback table.')
+    except Exception as exc:
+        logger.warning(f'[API] Feedback table check failed: {exc}')
+
 
 def create_app() -> FastAPI:
     # Build the OpenAPI servers list so Swagger UI calls the correct host.
@@ -69,6 +120,10 @@ def create_app() -> FastAPI:
     # Exception Handlers
     app.add_exception_handler(APIException, api_exception_handler)
     app.add_exception_handler(Exception, general_exception_handler)
+
+    @app.on_event("startup")
+    async def startup_event() -> None:
+        await ensure_feedback_table()
 
     # Add Routers
     from app.api.v1.endpoints import documents, auth, schools, users, semesters, subjects, ai, notifications, feedback
