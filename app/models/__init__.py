@@ -6,3 +6,4 @@ from .subject import Subject
 from .document import Document
 from .user import User
 from .notification import Notification
+from .userfeedback import UserFeedback

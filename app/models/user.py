@@ -34,3 +34,4 @@ class User(Base):
     # Relationships
     school = relationship("School", back_populates="users")
     department = relationship("Department", back_populates="users")
+    feedback_entries = relationship("UserFeedback", back_populates="user")
