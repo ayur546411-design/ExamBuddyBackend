@@ -50,8 +50,10 @@ async def onboard_student(user_in: UserCreate, db: AsyncSession = Depends(get_db
         id=user_id,
         full_name=user_in.full_name,
         hashed_password=get_password_hash(dummy_password),
-        school_id=user_in.school_id,
-        department_id=user_in.department_id,
+        # Keep the active school/department on the device session only.
+        # Do not persist the student's campus selection in the backend user record.
+        school_id=None,
+        department_id=None,
         role=user_in.role
     )
     

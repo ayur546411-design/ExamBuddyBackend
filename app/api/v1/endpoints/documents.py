@@ -119,7 +119,7 @@ async def get_documents(
     logger.info(f"[Documents] param subject_id     = {subject_id}")
     logger.info(f"[Documents] param document_type  = {document_type}")
 
-    if not current_user.department_id:
+    if not department_id and not current_user.department_id:
         logger.error("[Documents] REJECTED: user has no department_id")
         raise HTTPException(status_code=400, detail="User is not assigned to a department")
 

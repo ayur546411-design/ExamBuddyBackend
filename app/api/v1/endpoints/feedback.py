@@ -7,7 +7,7 @@ from app.db.session import get_db, engine
 from app.models.userfeedback import UserFeedback
 from app.models.user import User
 from app.schemas.userfeedback import UserFeedback as FeedbackSchema, UserFeedbackCreate
-from app.api.v1.endpoints.users import get_current_user
+from app.api.v1.endpoints.users import get_current_user, optional_current_user
 
 router = APIRouter()
 
@@ -44,17 +44,35 @@ async def ensure_feedback_table() -> None:
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                         CONSTRAINT fk_userfeedback_user
                             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
-                    );
+                    )
                     """
                 )
             )
             await conn.execute(
                 text(
                     """
-                    CREATE INDEX IF NOT EXISTS ix_userfeedback_user_id ON userfeedback (user_id);
-                    CREATE INDEX IF NOT EXISTS ix_userfeedback_full_name ON userfeedback (full_name);
-                    CREATE INDEX IF NOT EXISTS ix_userfeedback_school_id ON userfeedback (school_id);
-                    CREATE INDEX IF NOT EXISTS ix_userfeedback_department_id ON userfeedback (department_id);
+                    CREATE INDEX IF NOT EXISTS ix_userfeedback_user_id ON userfeedback (user_id)
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    CREATE INDEX IF NOT EXISTS ix_userfeedback_full_name ON userfeedback (full_name)
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    CREATE INDEX IF NOT EXISTS ix_userfeedback_school_id ON userfeedback (school_id)
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    CREATE INDEX IF NOT EXISTS ix_userfeedback_department_id ON userfeedback (department_id)
                     """
                 )
             )
@@ -66,7 +84,7 @@ async def ensure_feedback_table() -> None:
 async def submit_feedback(
     payload: UserFeedbackCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(optional_current_user),
 ):
     if not payload.full_name or not payload.message or not payload.message.strip():
         raise HTTPException(status_code=400, detail="Full name and message are required.")
@@ -74,12 +92,12 @@ async def submit_feedback(
     await ensure_feedback_table()
 
     feedback = UserFeedback(
-        user_id=current_user.id,
+        user_id=current_user.id if current_user else None,
         full_name=payload.full_name.strip(),
         feedback_type=(payload.feedback_type or "Suggestion").strip() or "Suggestion",
         message=payload.message.strip(),
-        school_id=payload.school_id or current_user.school_id,
-        department_id=payload.department_id or current_user.department_id,
+        school_id=payload.school_id or (current_user.school_id if current_user else None),
+        department_id=payload.department_id or (current_user.department_id if current_user else None),
     )
     db.add(feedback)
     await db.commit()

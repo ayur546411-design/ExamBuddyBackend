@@ -68,7 +68,7 @@ async def get_subjects(
     logger.info("[Subjects] ---- REQUEST START ----")
     logger.info(f"[Subjects] user={current_user.full_name} dept_id={current_user.department_id} semester_id={semester_id} department_id={department_id}")
 
-    if not current_user.department_id and not is_admin_user(current_user):
+    if not department_id and not current_user.department_id and not is_admin_user(current_user):
         logger.warning(f"[Subjects] REJECTED: user {current_user.full_name} has no department_id")
         raise HTTPException(status_code=400, detail="User is not assigned to a department")
 

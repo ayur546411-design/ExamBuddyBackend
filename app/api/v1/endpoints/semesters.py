@@ -37,7 +37,7 @@ async def get_semesters(
     logger.info("[Semesters] ---- REQUEST START ----")
     logger.info(f"[Semesters] user={current_user.full_name} dept_id={current_user.department_id} requested_department={department_id}")
 
-    if not current_user.department_id and not is_admin_user(current_user):
+    if not department_id and not current_user.department_id and not is_admin_user(current_user):
         logger.warning(f"[Semesters] REJECTED: user {current_user.full_name} has no department_id")
         raise HTTPException(status_code=400, detail="User is not assigned to a department")
 

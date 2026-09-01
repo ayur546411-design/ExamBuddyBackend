@@ -42,17 +42,35 @@ async def ensure_feedback_table() -> None:
                             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                             CONSTRAINT fk_userfeedback_user
                                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
-                        );
+                        )
                         """
                     )
                 )
                 await conn.execute(
                     text(
                         """
-                        CREATE INDEX IF NOT EXISTS ix_userfeedback_user_id ON userfeedback (user_id);
-                        CREATE INDEX IF NOT EXISTS ix_userfeedback_full_name ON userfeedback (full_name);
-                        CREATE INDEX IF NOT EXISTS ix_userfeedback_school_id ON userfeedback (school_id);
-                        CREATE INDEX IF NOT EXISTS ix_userfeedback_department_id ON userfeedback (department_id);
+                        CREATE INDEX IF NOT EXISTS ix_userfeedback_user_id ON userfeedback (user_id)
+                        """
+                    )
+                )
+                await conn.execute(
+                    text(
+                        """
+                        CREATE INDEX IF NOT EXISTS ix_userfeedback_full_name ON userfeedback (full_name)
+                        """
+                    )
+                )
+                await conn.execute(
+                    text(
+                        """
+                        CREATE INDEX IF NOT EXISTS ix_userfeedback_school_id ON userfeedback (school_id)
+                        """
+                    )
+                )
+                await conn.execute(
+                    text(
+                        """
+                        CREATE INDEX IF NOT EXISTS ix_userfeedback_department_id ON userfeedback (department_id)
                         """
                     )
                 )
