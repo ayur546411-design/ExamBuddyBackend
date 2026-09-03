@@ -44,7 +44,7 @@ async def get_semesters(
     query = select(Semester).where(Semester.is_active == True)
 
     if department_id:
-        if not is_admin_user(current_user) and current_user.department_id != department_id:
+        if not is_admin_user(current_user) and current_user.department_id and current_user.department_id != department_id:
             raise HTTPException(status_code=403, detail="Not allowed to access this department")
         query = query.where(Semester.department_id == department_id)
     elif not is_admin_user(current_user):
