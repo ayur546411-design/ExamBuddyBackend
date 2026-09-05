@@ -1,5 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func
 from sqlalchemy.future import select
 from sqlalchemy.orm import load_only
 from typing import Optional, List
@@ -83,6 +84,56 @@ def is_admin_user(user: User) -> bool:
     if role_value == UserRoleEnum.admin:
         return True
     return bool(user.is_admin)
+
+
+@router.get("/stats")
+async def get_document_stats(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return dashboard counts without loading every document into memory."""
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Only admins can view document stats")
+
+    grouped_result = await db.execute(
+        select(Document.status, func.count(Document.id)).group_by(Document.status)
+    )
+    counts = {status or "unknown": count for status, count in grouped_result.all()}
+
+    recent_result = await db.execute(
+        select(Document)
+        .options(load_only(
+            Document.id,
+            Document.title,
+            Document.document_type,
+            Document.status,
+            Document.uploaded_by_admin,
+            Document.created_at,
+        ))
+        .order_by(Document.created_at.desc())
+        .limit(5)
+    )
+
+    recent_documents = [
+        {
+            "id": document.id,
+            "title": document.title,
+            "document_type": document.document_type,
+            "status": document.status,
+            "uploaded_by_admin": document.uploaded_by_admin,
+        }
+        for document in recent_result.scalars().all()
+    ]
+
+    return {
+        "total": sum(counts.values()),
+        "published": counts.get("published", 0),
+        "draft": counts.get("draft", 0),
+        "processing": counts.get("processing", 0),
+        "incomplete": counts.get("incomplete", 0),
+        "failed": counts.get("failed", 0),
+        "recent": recent_documents,
+    }
 
 @router.get("/", response_model=List[DocumentSchema])
 async def get_documents(
