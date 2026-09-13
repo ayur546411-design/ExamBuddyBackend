@@ -7,7 +7,7 @@ class SubjectBase(BaseModel):
     name: str
     code: Optional[str] = None
     description: Optional[str] = None
-    credits: Optional[int] = None
+    credits: Optional[float] = None
     faculty_name: Optional[str] = None
     subject_type: SubjectTypeEnum = SubjectTypeEnum.theory
     is_active: bool = True
@@ -31,7 +31,7 @@ class SubjectUpdate(BaseModel):
     name: Optional[str] = None
     code: Optional[str] = None
     description: Optional[str] = None
-    credits: Optional[int] = None
+    credits: Optional[float] = None
     faculty_name: Optional[str] = None
     subject_type: Optional[SubjectTypeEnum] = None
     is_active: Optional[bool] = None

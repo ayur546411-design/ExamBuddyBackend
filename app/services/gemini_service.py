@@ -607,7 +607,7 @@ async def extract_subject_list_from_text(raw_text: str) -> dict:
 
 Rules:
 1. Detect each subject as an object with: Subject Name, Subject Code, Credits.
-2. Credits must be an integer number; if missing, use null.
+2. Credits must be a number (integer or decimal like 1.5, 0.5); if missing, use null.
 3. Deduplicate repeated subjects.
 4. Prefer the source document text; do not invent values.
 5. If no subject names are found, return {{"Subjects": []}}.

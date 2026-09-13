@@ -189,7 +189,7 @@ async def ai_bulk_create_subjects(
             name=name,
             code=code or None,
             description="",
-            credits=int(credits) if isinstance(credits, (int, float)) else 0,
+            credits=float(credits) if isinstance(credits, (int, float)) else 0.0,
             faculty_name="",
             subject_type="theory",
             is_active=True,

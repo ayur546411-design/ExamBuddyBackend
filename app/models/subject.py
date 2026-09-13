@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Boolean, ForeignKey, DateTime, Enum
+from sqlalchemy import Column, String, Integer, Float, Boolean, ForeignKey, DateTime, Enum
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.base import Base
@@ -20,7 +20,7 @@ class Subject(Base):
     name = Column(String, index=True, nullable=False)
     code = Column(String, index=True, nullable=True) # E.g., CS401; unique within a department/semester
     description = Column(String, nullable=True)
-    credits = Column(Integer, nullable=True)
+    credits = Column(Float, nullable=True)
     faculty_name = Column(String, nullable=True)
     subject_type = Column(Enum(SubjectTypeEnum), default=SubjectTypeEnum.theory)
     
