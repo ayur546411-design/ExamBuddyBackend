@@ -72,7 +72,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(Exception, general_exception_handler)
 
     # Add Routers
-    from app.api.v1.endpoints import documents, auth, schools, users, semesters, subjects, ai, notifications, feedback
+    from app.api.v1.endpoints import documents, auth, schools, users, semesters, subjects, ai, notifications, feedback, public
     app.include_router(auth.router, prefix=settings.API_V1_STR + "/auth", tags=["auth"])
     app.include_router(users.router, prefix=settings.API_V1_STR + "/users", tags=["users"])
     app.include_router(schools.router, prefix=settings.API_V1_STR + "/schools", tags=["schools"])
@@ -82,6 +82,8 @@ def create_app() -> FastAPI:
     app.include_router(notifications.router, prefix=settings.API_V1_STR + "/notifications", tags=["notifications"])
     app.include_router(feedback.router, prefix=settings.API_V1_STR + "/feedback", tags=["feedback"])
     app.include_router(ai.router, prefix=settings.API_V1_STR + "/ai", tags=["ai"])
+    # Public CDN-cacheable read-only academic APIs (no JWT required)
+    app.include_router(public.router, prefix=settings.API_V1_STR + "/public", tags=["public"])
 
     @app.get("/")
     async def root():

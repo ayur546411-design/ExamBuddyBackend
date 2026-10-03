@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func
 from sqlalchemy.future import select
@@ -945,8 +945,18 @@ async def upload_document(
 
 
 @router.get("/admin/db-status")
-async def db_status(db: AsyncSession = Depends(get_db)):
-    """Debug: show what database the server is connected to and what it contains."""
+async def db_status(
+    x_admin_key: str = Header(..., alias="X-Admin-Key"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Debug: show what database the server is connected to and what it contains.
+
+    ⚠️  SECURITY: requires X-Admin-Key header matching SECRET_KEY.
+    This endpoint was previously unauthenticated and exposed the DB URL prefix.
+    """
+    from app.core.config import settings
+    if x_admin_key != settings.SECRET_KEY:
+        raise HTTPException(status_code=403, detail="Forbidden")
     from app.models.semester import Semester
     from app.models.subject import Subject
     from app.models.department import Department
@@ -985,11 +995,14 @@ async def db_status(db: AsyncSession = Depends(get_db)):
 
 @router.post("/admin/repair-semesters")
 async def repair_semester_assignments(
-    db: AsyncSession = Depends(get_db)
+    x_admin_key: str = Header(..., alias="X-Admin-Key"),
+    db: AsyncSession = Depends(get_db),
 ):
-
     """
     Admin endpoint: Audit and repair subjects assigned to wrong semester.
+
+    ⚠️  SECURITY: requires X-Admin-Key header matching SECRET_KEY.
+    This endpoint was previously unauthenticated and could mutate the database.
 
     Detects subjects where the subject code contains an elective slot number
     (e.g. ITUETK3 = 3rd elective slot) that Gemini incorrectly treated as
@@ -1000,6 +1013,9 @@ async def repair_semester_assignments(
       2. Detect subjects in wrong semester based on structured_json vs DB
       3. Move mis-assigned subjects and their documents to the correct semester
     """
+    from app.core.config import settings
+    if x_admin_key != settings.SECRET_KEY:
+        raise HTTPException(status_code=403, detail="Forbidden")
     from app.models.semester import Semester
     from app.models.subject import Subject
 
