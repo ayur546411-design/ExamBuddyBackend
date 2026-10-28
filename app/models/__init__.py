@@ -5,5 +5,6 @@ from .semester import Semester
 from .subject import Subject
 from .document import Document
 from .user import User
+from .admin_user import AdminUser
 from .notification import Notification
 from .userfeedback import UserFeedback
